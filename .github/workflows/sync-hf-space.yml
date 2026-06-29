@@ -1,0 +1,41 @@
+name: Sync to Hugging Face Space
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Push to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          pip install huggingface_hub --quiet
+          python - <<'EOF'
+          import os
+          from huggingface_hub import HfApi
+          HfApi().upload_folder(
+              folder_path=".",
+              repo_id="carolinehana/berkie_reachy",
+              repo_type="space",
+              ignore_patterns=[
+                  ".env",
+                  ".claude/",
+                  "__pycache__/",
+                  "*.pyc",
+                  ".git/",
+                  "*.egg-info/",
+                  "cache/",
+                  ".github/",
+              ],
+              token=os.environ["HF_TOKEN"],
+          )
+          print("Synced to HF Space")
+          EOF
