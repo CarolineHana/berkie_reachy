@@ -1,0 +1,118 @@
+"""Browser-facing Berky live handler.
+
+This handler is used by the Reachy Mini Gradio app on port 7860.
+It accepts browser microphone audio, transcribes it locally with Whisper,
+sends finalized transcript chunks to LLM Engine over Socket.IO, and plays
+agent replies through the local TTS command.
+"""
+
+from __future__ import annotations
+
+import math
+import asyncio
+import logging
+from typing import Any, Optional, Tuple
+
+from fastrtc import AdditionalOutputs, AsyncStreamHandler, wait_for_item
+from numpy.typing import NDArray
+
+from berkie_reachy.llm_engine_socket import LLMEngineSocketClient, _message_text
+from berkie_reachy.local_whisper import LocalWhisperSegmenter
+from berkie_reachy.tts import CommandTTS
+
+
+logger = logging.getLogger(__name__)
+
+_SPEAKING_UPDATE_HZ = 20
+_SPEAKING_PITCH_AMP = 0.03   # radians (~1.7°) gentle nod
+_SPEAKING_YAW_AMP = 0.02     # radians (~1.1°) subtle turn
+_SPEAKING_PITCH_FREQ = 0.5   # Hz
+_SPEAKING_YAW_FREQ = 0.3     # Hz
+
+
+class BerkyLiveHandler(AsyncStreamHandler):
+    """Stream browser audio to Berky via local Whisper and LLM Engine."""
+
+    def __init__(self, movement_manager: Optional[Any] = None) -> None:
+        super().__init__(expected_layout="mono", output_sample_rate=16000, input_sample_rate=16000)
+        self.output_queue: "asyncio.Queue[AdditionalOutputs]" = asyncio.Queue()
+        self.transcriber = LocalWhisperSegmenter()
+        self.tts = CommandTTS()
+        self.client = LLMEngineSocketClient(on_agent_message=self._on_agent_message)
+        self._connected = False
+        self._movement_manager = movement_manager
+
+    def copy(self) -> "BerkyLiveHandler":
+        """Create a fresh handler for a new stream session."""
+        return BerkyLiveHandler(movement_manager=self._movement_manager)
+
+    async def start_up(self) -> None:
+        """Connect to LLM Engine before audio starts flowing."""
+        if self._connected:
+            return
+        await self.client.connect()
+        self._connected = True
+        logger.info("Berky live handler connected to LLM Engine")
+
+    async def _speaking_animation(self, stop_event: asyncio.Event) -> None:
+        """Apply gentle sinusoidal head movement while speaking."""
+        dt = 1.0 / _SPEAKING_UPDATE_HZ
+        t = 0.0
+        try:
+            while not stop_event.is_set():
+                pitch = _SPEAKING_PITCH_AMP * math.sin(2 * math.pi * _SPEAKING_PITCH_FREQ * t)
+                yaw = _SPEAKING_YAW_AMP * math.sin(2 * math.pi * _SPEAKING_YAW_FREQ * t + 1.0)
+                self._movement_manager.set_speech_offsets((0.0, 0.0, 0.0, 0.0, pitch, yaw))
+                t += dt
+                await asyncio.sleep(dt)
+        finally:
+            self._movement_manager.set_speech_offsets((0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+
+    async def _on_agent_message(self, message: dict[str, Any]) -> None:
+        """Speak and display one agent message."""
+        text = _message_text(message)
+        if not text:
+            return
+
+        if self._movement_manager is not None:
+            stop_anim = asyncio.Event()
+            anim_task = asyncio.create_task(self._speaking_animation(stop_anim))
+            try:
+                await self.tts.speak(text)
+            finally:
+                stop_anim.set()
+                await anim_task
+        else:
+            await self.tts.speak(text)
+
+        await self.output_queue.put(AdditionalOutputs({"role": "assistant", "content": text}))
+
+    async def receive(self, frame: Tuple[int, NDArray[Any]]) -> None:
+        """Accept browser microphone frames and send completed transcripts."""
+        if not self._connected:
+            return
+
+        sample_rate, audio = frame
+        transcript = await self.transcriber.accept(sample_rate, audio)
+        if not transcript:
+            return
+
+        logger.info("Browser transcript: %s", transcript)
+        await self.output_queue.put(AdditionalOutputs({"role": "user", "content": transcript}))
+        await self.client.send_transcript(transcript, final=True)
+
+    async def emit(self) -> AdditionalOutputs | None:
+        """Emit chatbot updates when they are available."""
+        return await wait_for_item(self.output_queue)  # type: ignore[no-any-return]
+
+    async def shutdown(self) -> None:
+        """Disconnect from LLM Engine and clear pending output."""
+        try:
+            await self.client.disconnect()
+        finally:
+            self._connected = False
+            while not self.output_queue.empty():
+                try:
+                    self.output_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
