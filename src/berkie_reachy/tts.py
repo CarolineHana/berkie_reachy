@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shlex
 import shutil
 import asyncio
@@ -13,6 +14,25 @@ from berkie_reachy.config import config
 
 
 logger = logging.getLogger(__name__)
+
+
+def _clean_for_speech(text: str) -> str:
+    """Strip markdown and symbols that sound bad when read aloud."""
+    # Remove markdown links [label](url) → label
+    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+    # Remove bare URLs
+    text = re.sub(r'https?://\S+', '', text)
+    # Remove markdown bold/italic markers
+    text = re.sub(r'\*{1,3}([^*]+)\*{1,3}', r'\1', text)
+    # Replace em dash and en dash with a pause comma
+    text = re.sub(r'[—–]', ',', text)
+    # Remove other markdown symbols: #, >, |, ~, `
+    text = re.sub(r'[#>`|~]', '', text)
+    # Remove backtick code spans
+    text = re.sub(r'`[^`]*`', '', text)
+    # Collapse multiple spaces/punctuation
+    text = re.sub(r' {2,}', ' ', text)
+    return text.strip()
 
 
 def _default_tts_command() -> str | None:
@@ -35,7 +55,7 @@ class CommandTTS:
 
     async def speak(self, text: str) -> None:
         """Speak one utterance, if a local command is available."""
-        clean_text = " ".join(text.split())
+        clean_text = " ".join(_clean_for_speech(text).split())
         if not clean_text:
             return
         if not self.command_template:
