@@ -111,8 +111,14 @@ _skip_dotenv = _env_flag("REACHY_MINI_SKIP_DOTENV", default=False)
 if _skip_dotenv:
     logger.info("Skipping .env loading because REACHY_MINI_SKIP_DOTENV is set")
 else:
-    # Locate .env file (search upward from current working directory)
+    # Locate .env file — search from cwd first, then fall back to package root
     dotenv_path = find_dotenv(usecwd=True)
+    if not dotenv_path:
+        import os as _os
+        _pkg_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+        _candidate = _os.path.join(_pkg_root, ".env")
+        if _os.path.isfile(_candidate):
+            dotenv_path = _candidate
 
     if dotenv_path:
         # Load .env and override environment variables
