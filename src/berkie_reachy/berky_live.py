@@ -99,7 +99,10 @@ class BerkyLiveHandler(AsyncStreamHandler):
 
         logger.info("Browser transcript: %s", transcript)
         await self.output_queue.put(AdditionalOutputs({"role": "user", "content": transcript}))
-        await self.client.send_transcript(transcript, final=True)
+        try:
+            await self.client.send_transcript(transcript, final=True)
+        except Exception:
+            logger.warning("Failed to send transcript — LLM Engine disconnected, will retry on reconnect")
 
     async def emit(self) -> AdditionalOutputs | None:
         """Emit chatbot updates when they are available."""

@@ -105,6 +105,7 @@ class LLMEngineSocketClient:
             engineio_logger=False,
         )
         self._connected = asyncio.Event()
+        self._initial_connect_done = False
         self._register_handlers()
 
     def _register_handlers(self) -> None:
@@ -112,6 +113,8 @@ class LLMEngineSocketClient:
         async def connect() -> None:
             logger.info("Connected to LLM Engine Socket.IO at %s", config.BERKY_LLM_ENGINE_SOCKET_URL)
             self._connected.set()
+            if self._initial_connect_done and self.session is not None:
+                asyncio.create_task(self.join_conversation())
 
         @self.sio.event
         async def disconnect() -> None:
@@ -196,6 +199,7 @@ class LLMEngineSocketClient:
         await self.sio.connect(config.BERKY_LLM_ENGINE_SOCKET_URL, transports=["websocket"])
         await asyncio.wait_for(self._connected.wait(), timeout=10.0)
         await self.join_conversation()
+        self._initial_connect_done = True
 
     async def join_conversation(self) -> None:
         """Join transcript and response rooms for the configured conversation."""
@@ -226,6 +230,10 @@ class LLMEngineSocketClient:
         """Send one transcript message to LLM Engine."""
         if self.session is None:
             raise RuntimeError("Cannot send transcript before connect().")
+
+        if not self.sio.connected:
+            logger.warning("Socket not connected, skipping transcript (will resume on reconnect)")
+            return
 
         clean_text = text.strip()
         if not clean_text:
@@ -261,6 +269,14 @@ class LLMEngineSocketClient:
     def _is_relevant_agent_message(self, message: JsonDict) -> bool:
         if not message.get("fromAgent"):
             return False
+
+        # voiceAssistant posts JSON body with source='voice'.
+        # Filter to only those so Reachy doesn't speak check-ins, intros, etc.
+        body = message.get("body")
+        if message.get("bodyType") == "json" and isinstance(body, dict):
+            if body.get("source") != "voice":
+                return False
+
         if not _message_text(message):
             return False
         channels = message.get("channels")

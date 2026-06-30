@@ -1,7 +1,7 @@
 # Berky LLM Engine Contract
 
-Berky's backend agent should live in LLM Engine, close to
-`src/agents/eventAssistant/voiceAssistant.ts`.
+Berky's backend agent is the existing `voiceAssistant` agent type in LLM Engine
+(`src/agents/eventAssistant/voiceAssistant.ts`). No dedicated agent type is needed.
 
 ## Channels
 
@@ -27,37 +27,33 @@ The Reachy runtime emits Socket.IO `message:create` events with:
 
 ## Agent Behavior
 
-The `berkyAgent` should:
+`voiceAssistant` already handles everything Berky needs:
 
-- Listen to finalized transcript messages on the `transcript` channel.
-- Fuzzy-match the wake phrase `hey berkie` / `hey berky` and the configured bot name.
-- Treat a bare wake phrase as an activation for the next transcript turn, matching the pattern in `voiceAssistant.ts`.
-- Use the recent live transcript window as meeting context, including speaker/topic drift when available.
-- Use BKC research archive RAG for background knowledge, but do not ignore the live meeting context.
-- Respond only when addressed or when the agent has a high-confidence, contextually useful contribution.
-- Return a short spoken response on the configured response channel, usually `chat`.
+- Listens to finalized transcript messages on the `transcript` channel.
+- Fuzzy-matches the wake phrase `hey berkie` / `hey berky` and the configured `agentConfig.botName`.
+- Two-turn detection: a bare wake phrase activates the next transcript turn.
+- Calls `answerQuestion` from `eventQuestionHandler.ts` for RAG over the live transcript, speaker bios, and background resources.
+- Personality injected via `agentConfig.personality` (currently `'sarcastic-expert'`).
+- Tool-augmented answers via `agentConfig.tools` (currently `['web_search']`).
+- Responds on the `chat` channel with `bodyType: 'json'` and `body.source: 'voice'`.
 
-## Suggested Prompt Shape
+## Reachy Client Filtering
 
-System prompt:
+`llm_engine_socket.py` (`_is_relevant_agent_message`) filters incoming agent messages to only those with `bodyType: 'json'` and `body.source === 'voice'`, so Berky does not speak check-ins, intros, or messages from other agents.
 
-```text
-You are Berky, an embodied AI agent at the Berkman Klein Center's Applied Social Media Lab.
-You are physically present through a Reachy humanoid robot in a live meeting.
-Use the live transcript as immediate context and BKC research archive retrieval as background knowledge.
-When answering, be concise enough to speak aloud. Ground claims in retrieved or live context.
-Do not interrupt unless addressed by wake phrase or unless your contribution is clearly useful.
+## Agent Configuration (MongoDB `baseusers`)
+
+```json
+{
+  "agentType": "voiceAssistant",
+  "agentConfig": {
+    "botName": "Berkie",
+    "personality": "sarcastic-expert",
+    "tools": ["web_search"]
+  }
+}
 ```
 
-User prompt:
+## Conversation Configuration (MongoDB `conversations`)
 
-```text
-Wake-directed question:
-{question}
-
-Recent live meeting context:
-{recentTranscript}
-
-Relevant BKC archive context:
-{ragContext}
-```
+Set `name` and `description` on the conversation document to give the LLM context about the event. Add `presenters`, `moderators`, and `resources` for RAG grounding.
