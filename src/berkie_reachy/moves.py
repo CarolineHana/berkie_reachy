@@ -32,6 +32,7 @@ Safety
 """
 
 from __future__ import annotations
+import math
 import time
 import logging
 import threading
@@ -276,6 +277,8 @@ class MovementManager:
         self._antenna_blend_duration = 0.4  # seconds to blend back after listening
         self._last_listening_blend_time = self._now()
         self._breathing_active = False  # true when breathing move is running or queued
+        self._t_listening: float = 0.0  # monotonic time accumulator for listening motion
+        self._last_listen_tick: float = self._now()
         self._listening_debounce_s = 0.15
         self._last_listening_toggle_time = self._now()
         self._last_set_target_err = 0.0
@@ -607,7 +610,9 @@ class MovementManager:
         self._last_listening_blend_time = now
 
         if listening:
-            antennas_cmd = listening_antennas
+            # Gentle ear sway while listening — opposite directions, slow
+            sway = math.radians(8) * math.sin(2 * math.pi * 0.4 * self._t_listening)
+            antennas_cmd = (listening_antennas[0] + sway, listening_antennas[1] - sway)
             new_blend = 0.0
         else:
             dt = max(0.0, now - last_update)
@@ -829,7 +834,16 @@ class MovementManager:
             # 4) Build primary and secondary full-body poses, then fuse them
             head, antennas, body_yaw = self._compose_full_body_pose(loop_start)
 
-            # 5) Apply listening antenna freeze or blend-back
+            # 4b) Accumulate listening timer and add body-yaw rotation while listening
+            dt_tick = loop_start - self._last_listen_tick
+            self._last_listen_tick = loop_start
+            if self._is_listening:
+                self._t_listening += dt_tick
+                body_yaw += math.radians(6) * math.sin(2 * math.pi * 0.15 * self._t_listening)
+            else:
+                self._t_listening = 0.0
+
+            # 5) Apply listening antenna sway or blend-back
             antennas_cmd = self._calculate_blended_antennas(antennas)
 
             # 6) Single set_target call - the only control point
