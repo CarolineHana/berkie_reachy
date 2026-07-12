@@ -10,6 +10,7 @@ This process is the physical layer:
 from __future__ import annotations
 
 import time
+import math
 import os
 import importlib.util
 import asyncio
@@ -18,8 +19,9 @@ import argparse
 import socket
 import subprocess
 import sys
+import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from reachy_mini import ReachyMini
 
@@ -215,12 +217,64 @@ class BerkyReachyRuntime:
         self._movement_thread_started = False
         self.client = LLMEngineSocketClient(on_agent_message=self._on_agent_message)
 
+    def _start_speaking_motion(self) -> Callable[[], None]:
+        """Drive a gentle head-bob via set_speech_offsets while Berkie speaks.
+
+        Returns a stop() callable that the caller must invoke when TTS ends.
+        No-ops safely if the movement manager is unavailable.
+        """
+        if self._movement_manager is None:
+            return lambda: None
+
+        stop_event = threading.Event()
+
+        def _loop() -> None:
+            # Gentle nod: pitch oscillates at ~1.8 Hz, ±6°
+            # Subtle sway: yaw oscillates at ~0.5 Hz, ±2°
+            PITCH_AMP = math.radians(6)
+            PITCH_FREQ = 1.8
+            YAW_AMP = math.radians(2)
+            YAW_FREQ = 0.5
+            ZERO = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+            t0 = time.monotonic()
+            try:
+                while not stop_event.is_set():
+                    t = time.monotonic() - t0
+                    pitch = PITCH_AMP * math.sin(2 * math.pi * PITCH_FREQ * t)
+                    yaw = YAW_AMP * math.sin(2 * math.pi * YAW_FREQ * t)
+                    try:
+                        self._movement_manager.set_speech_offsets(
+                            (0.0, 0.0, 0.0, 0.0, pitch, yaw)
+                        )
+                    except Exception:
+                        break
+                    time.sleep(0.02)  # ~50 Hz update rate
+            finally:
+                try:
+                    self._movement_manager.set_speech_offsets(ZERO)
+                except Exception:
+                    pass
+
+        thread = threading.Thread(target=_loop, daemon=True)
+        thread.start()
+
+        def stop() -> None:
+            stop_event.set()
+            thread.join(timeout=0.5)
+
+        return stop
+
     async def _on_agent_message(self, message: dict[str, Any]) -> None:
         text = _message_text(message)
         if not text:
             return
         logger.info("Berky agent response: %s", text)
-        await self.tts.speak(text)
+        stop_speaking = self._start_speaking_motion()
+        try:
+            await self.tts.speak(text)
+        finally:
+            stop_speaking()
 
     def _start_motion(self) -> None:
         try:
@@ -262,7 +316,7 @@ class BerkyReachyRuntime:
                 transcript = await self.transcriber.accept(input_sample_rate, frame)
                 self._set_listening(self.transcriber.is_active)
                 if transcript:
-                    await self.client.send_transcript(transcript, final=True)
+                    await self.client.send_transcript(transcript, final=True, speaker=self.transcriber.last_speaker)
 
                 await asyncio.sleep(0)
         finally:

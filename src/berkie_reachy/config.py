@@ -157,6 +157,8 @@ class Config:
     HF_HOME = os.getenv("HF_HOME", "./cache")
     LOCAL_VISION_MODEL = os.getenv("LOCAL_VISION_MODEL", "HuggingFaceTB/SmolVLM2-2.2B-Instruct")
     HF_TOKEN = os.getenv("HF_TOKEN")  # Optional, falls back to hf auth login if not set
+    BERKY_DIARIZATION_ENABLED = _env_flag("BERKY_DIARIZATION_ENABLED", False)
+    BERKY_DIARIZATION_DEVICE = os.getenv("BERKY_DIARIZATION_DEVICE", "cpu")
 
     logger.debug(f"Model: {MODEL_NAME}, HF_HOME: {HF_HOME}, Vision Model: {LOCAL_VISION_MODEL}")
 
