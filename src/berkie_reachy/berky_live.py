@@ -41,6 +41,7 @@ class BerkyLiveHandler(AsyncStreamHandler):
         self.client = LLMEngineSocketClient(on_agent_message=self._on_agent_message)
         self._connected = False
         self._movement_manager = movement_manager
+        self._listening_scan_task: asyncio.Task | None = None
 
     def copy(self) -> "BerkyLiveHandler":
         """Create a fresh handler for a new stream session."""
@@ -53,6 +54,40 @@ class BerkyLiveHandler(AsyncStreamHandler):
         await self.client.connect()
         self._connected = True
         logger.info("Berky live handler connected to LLM Engine")
+
+    async def _listening_scan_loop(self) -> None:
+        """Slowly rotate head left-right while user is speaking."""
+        YAW_AMP = math.radians(10)
+        YAW_FREQ = 0.2
+        ZERO = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        dt = 0.05
+        t = 0.0
+        try:
+            while True:
+                yaw = YAW_AMP * math.sin(2 * math.pi * YAW_FREQ * t)
+                try:
+                    self._movement_manager.set_speech_offsets((0.0, 0.0, 0.0, 0.0, 0.0, yaw))
+                except Exception:
+                    pass
+                t += dt
+                await asyncio.sleep(dt)
+        except asyncio.CancelledError:
+            try:
+                self._movement_manager.set_speech_offsets(ZERO)
+            except Exception:
+                pass
+
+    def _start_listening_scan(self) -> None:
+        if self._movement_manager is None:
+            return
+        if self._listening_scan_task and not self._listening_scan_task.done():
+            return
+        self._listening_scan_task = asyncio.create_task(self._listening_scan_loop(), name="listening-scan")
+
+    def _stop_listening_scan(self) -> None:
+        if self._listening_scan_task and not self._listening_scan_task.done():
+            self._listening_scan_task.cancel()
+        self._listening_scan_task = None
 
     async def _speaking_animation(self, stop_event: asyncio.Event) -> None:
         """Apply gentle sinusoidal head movement while speaking."""
@@ -94,6 +129,15 @@ class BerkyLiveHandler(AsyncStreamHandler):
 
         sample_rate, audio = frame
         transcript = await self.transcriber.accept(sample_rate, audio)
+
+        is_active = self.transcriber.is_active
+        if self._movement_manager is not None:
+            self._movement_manager.set_listening(is_active)
+        if is_active:
+            self._start_listening_scan()
+        else:
+            self._stop_listening_scan()
+
         if not transcript:
             return
 
@@ -110,6 +154,7 @@ class BerkyLiveHandler(AsyncStreamHandler):
 
     async def shutdown(self) -> None:
         """Disconnect from LLM Engine and clear pending output."""
+        self._stop_listening_scan()
         try:
             await self.client.disconnect()
         finally:

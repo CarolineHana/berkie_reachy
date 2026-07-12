@@ -89,8 +89,8 @@ class BreathingMove(Move):  # type: ignore
         # Breathing parameters
         self.breathing_z_amplitude = 0.005  # 5mm gentle breathing
         self.breathing_frequency = 0.1  # Hz (6 breaths per minute)
-        self.antenna_sway_amplitude = np.deg2rad(15)  # 15 degrees
-        self.antenna_frequency = 0.5  # Hz (faster antenna sway)
+        self.antenna_sway_amplitude = np.deg2rad(3)  # 3 degrees — barely perceptible at rest
+        self.antenna_frequency = 0.3  # Hz
 
     @property
     def duration(self) -> float:

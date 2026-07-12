@@ -116,6 +116,9 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._response_done_event.set()
         self._last_response_rejected: bool = False
 
+        # Listening head-scan task
+        self._listening_scan_task: asyncio.Task[None] | None = None
+
     def copy(self) -> "OpenaiRealtimeHandler":
         """Create a copy of the handler."""
         return OpenaiRealtimeHandler(self.deps, self.gradio_mode, self.instance_path)
@@ -510,9 +513,11 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         if self.deps.head_wobbler is not None:
                             self.deps.head_wobbler.reset()
                         self.deps.movement_manager.set_listening(True)
+                        self._start_listening_scan()
                         logger.debug("User speech started")
 
                     if event.type == "input_audio_buffer.speech_stopped":
+                        self._stop_listening_scan()
                         self.deps.movement_manager.set_listening(False)
                         logger.debug("User speech stopped - server will auto-commit with VAD")
 
@@ -844,6 +849,41 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             return voices
         except Exception:
             return fallback
+
+    async def _listening_scan_loop(self) -> None:
+        """Slowly rotate head left-right while user is speaking — shows active listening."""
+        import math
+        YAW_AMP = math.radians(10)
+        YAW_FREQ = 0.2
+        ZERO = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        dt = 0.05
+        t = 0.0
+        try:
+            while True:
+                yaw = YAW_AMP * math.sin(2 * math.pi * YAW_FREQ * t)
+                try:
+                    self.deps.movement_manager.set_speech_offsets((0.0, 0.0, 0.0, 0.0, 0.0, yaw))
+                except Exception:
+                    pass
+                t += dt
+                await asyncio.sleep(dt)
+        except asyncio.CancelledError:
+            try:
+                self.deps.movement_manager.set_speech_offsets(ZERO)
+            except Exception:
+                pass
+
+    def _start_listening_scan(self) -> None:
+        if self.deps.movement_manager is None:
+            return
+        if self._listening_scan_task and not self._listening_scan_task.done():
+            return
+        self._listening_scan_task = asyncio.create_task(self._listening_scan_loop(), name="listening-scan")
+
+    def _stop_listening_scan(self) -> None:
+        if self._listening_scan_task and not self._listening_scan_task.done():
+            self._listening_scan_task.cancel()
+        self._listening_scan_task = None
 
     async def send_idle_signal(self, idle_duration: float) -> None:
         """Send an idle signal to the openai server."""
