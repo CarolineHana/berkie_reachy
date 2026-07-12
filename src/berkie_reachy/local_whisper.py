@@ -149,20 +149,27 @@ class LocalWhisperSegmenter:
         )
         segments = list(segments)  # materialise so diarizer can reuse the audio
 
+        plain_text = " ".join(seg.text.strip() for seg in segments if seg.text.strip())
+
         if self._diarizer is not None:
-            aligned = self._diarizer.align_with_asr(segments, audio, TARGET_SAMPLE_RATE)
-            if aligned:
-                totals: dict[str, int] = {}
-                for sp, t in aligned:
-                    totals[sp] = totals.get(sp, 0) + len(t)
-                self.last_speaker = max(totals, key=totals.__getitem__)
-                text = " ".join(t for _, t in aligned)
-            else:
+            try:
+                aligned = self._diarizer.align_with_asr(segments, audio, TARGET_SAMPLE_RATE)
+                if aligned:
+                    totals: dict[str, int] = {}
+                    for sp, t in aligned:
+                        totals[sp] = totals.get(sp, 0) + len(t)
+                    self.last_speaker = max(totals, key=totals.__getitem__)
+                    text = " ".join(t for _, t in aligned)
+                else:
+                    self.last_speaker = None
+                    text = plain_text
+            except Exception:
+                logger.warning("Diarization failed, falling back to plain transcript", exc_info=True)
                 self.last_speaker = None
-                text = " ".join(seg.text.strip() for seg in segments if seg.text.strip())
+                text = plain_text
         else:
             self.last_speaker = None
-            text = " ".join(seg.text.strip() for seg in segments if seg.text.strip())
+            text = plain_text
 
         transcript = " ".join(text.split())
         if transcript:

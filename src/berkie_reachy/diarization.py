@@ -43,7 +43,11 @@ class Diarizer:
         logger.info("pyannote pipeline ready.")
 
     def _run(self, audio: np.ndarray, sample_rate: int) -> list[tuple[float, float, str]]:
-        self._load()
+        try:
+            self._load()
+        except Exception:
+            logger.exception("pyannote pipeline failed to load")
+            return []
         import soundfile as sf  # type: ignore
         buf = io.BytesIO()
         sf.write(buf, audio, sample_rate, format="WAV")
