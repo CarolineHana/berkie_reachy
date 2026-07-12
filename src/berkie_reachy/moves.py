@@ -463,6 +463,12 @@ class MovementManager:
                     float(self._last_commanded_pose[1][1]),
                 )
                 self._antenna_unfreeze_blend = 0.0
+                # Stop any active breathing so the head is still while listening
+                if isinstance(self.state.current_move, BreathingMove):
+                    self.state.current_move = None
+                    self.state.move_start_time = None
+                    self._breathing_active = False
+                self.move_queue.clear()
             else:
                 # Unfreeze: restart blending from frozen pose
                 self._antenna_unfreeze_blend = 0.0
