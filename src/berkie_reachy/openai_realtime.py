@@ -1,3 +1,4 @@
+import difflib
 import json
 import uuid
 import base64
@@ -58,6 +59,25 @@ def _compute_response_cost(usage: Any) -> float:
         cost += (getattr(out, "audio_tokens", 0) or 0) * AUDIO_OUTPUT_COST_PER_1M / 1e6
         cost += (getattr(out, "text_tokens", 0) or 0) * TEXT_OUTPUT_COST_PER_1M / 1e6
     return cost
+
+
+def _contains_wake_phrase(transcript: str, wake_phrase: str) -> bool:
+    """Return True if transcript contains the wake phrase (fuzzy, case-insensitive)."""
+    if not wake_phrase:
+        return True  # no wake phrase configured — always respond
+    text = transcript.lower().strip()
+    phrase = wake_phrase.lower().strip()
+    if phrase in text:
+        return True
+    # Sliding-window fuzzy match so "hey berky" / "a berkie" still trigger
+    phrase_words = phrase.split()
+    n = len(phrase_words)
+    words = text.split()
+    for i in range(max(1, len(words) - n + 1)):
+        window = " ".join(words[i : i + n])
+        if difflib.SequenceMatcher(None, window, phrase).ratio() >= 0.7:
+            return True
+    return False
 
 
 class OpenaiRealtimeHandler(AsyncStreamHandler):
@@ -459,6 +479,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 "turn_detection": {
                                     "type": "server_vad",
                                     "interrupt_response": True,
+                                    "create_response": False,  # we gate responses on wake phrase
                                 },
                             },
                             "output": {
@@ -581,6 +602,14 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 pass
 
                         await self.output_queue.put(AdditionalOutputs({"role": "user", "content": event.transcript}))
+
+                        # Wake phrase gate — only respond when addressed
+                        if _contains_wake_phrase(event.transcript, config.BERKY_WAKE_PHRASE or ""):
+                            logger.info("Wake phrase detected — generating response")
+                            self.last_activity_time = asyncio.get_event_loop().time()
+                            await self._safe_response_create()
+                        else:
+                            logger.info("No wake phrase in %r — ignoring", event.transcript)
 
                     # Handle assistant transcription
                     if event.type in ("response.audio_transcript.done", "response.output_audio_transcript.done"):
