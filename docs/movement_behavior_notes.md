@@ -25,8 +25,10 @@ When `set_listening(True)` fires (from transcriber activity):
   (`_poll_signals`, `command == "set_listening"`).
 - A slow **body-yaw oscillation** (±6° at 0.15 Hz) is added in the main
   control loop (`working_loop`, guarded by `self._is_listening`).
-- **Ear/antenna sway** replaces the old frozen antenna position: ±8° at
+- **Ear/antenna sway** replaces the old frozen antenna position: ±15° at
   0.4 Hz, antiphase between the two antennas (`_calculate_blended_antennas`).
+  Originally ±8°, bumped to ±15° per operator feedback (8° wasn't visibly
+  noticeable enough).
 - **Face-tracking is muted to zero**, faded in/out over 0.3s
   (`_face_tracking_mute`, in `_update_face_tracking`) — so the head doesn't
   keep turning to follow faces while listening; the body-yaw/ear-sway carry

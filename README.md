@@ -45,8 +45,12 @@ BERKIE_LLM_ENGINE_TOKEN=...
 
 BERKY_TRANSCRIPT_CHANNEL=transcript
 BERKY_RESPONSE_CHANNELS=chat
-BERKY_WAKE_PHRASE="hey berkie"
 ```
+
+`BERKY_WAKE_PHRASE` is **not** used by this `berky-reachy` runtime — the
+backend `voiceAssistant` agent in LLM Engine owns wake-phrase matching
+server-side. That env var only applies to the legacy `berkie-reachy`
+(OpenAI realtime) app below.
 
 Instead of `BERKIE_LLM_ENGINE_TOKEN`, you can provide
 `BERKIE_LLM_ENGINE_USERNAME` and `BERKIE_LLM_ENGINE_PASSWORD`; the app will log
