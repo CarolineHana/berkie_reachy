@@ -282,6 +282,9 @@ class MovementManager:
         self._face_tracking_mute = 0.0  # 0 = full tracking, 1 = fully muted (listening)
         self._face_tracking_mute_duration = 0.3  # seconds to fade tracking in/out
         self._last_face_mute_time = self._now()
+        self._face_tracking_rotation_smoothed = (0.0, 0.0, 0.0)  # roll, pitch, yaw - rate limited
+        self._max_face_tracking_rotation_rate = math.radians(30)  # cap: no fast snapping/twisting to a face
+        self._last_face_tracking_tick = self._now()
         self._listening_debounce_s = 0.15
         self._last_listening_toggle_time = self._now()
         self._last_set_target_err = 0.0
@@ -738,13 +741,30 @@ class MovementManager:
                 self._face_tracking_mute = max(target_mute, self._face_tracking_mute - step)
 
         scale = 1.0 - self._face_tracking_mute
+        target_rotation = (raw_offsets[3] * scale, raw_offsets[4] * scale, raw_offsets[5] * scale)
+
+        # Rate-limit the rotation (roll/pitch/yaw) so newly-acquired or fast-moving faces
+        # are tracked with a smooth turn instead of an instant snap/twist.
+        rate_dt = max(0.0, current_time - self._last_face_tracking_tick)
+        self._last_face_tracking_tick = current_time
+        max_step = self._max_face_tracking_rotation_rate * rate_dt
+        smoothed = []
+        for current, target in zip(self._face_tracking_rotation_smoothed, target_rotation):
+            delta = target - current
+            if delta > max_step:
+                delta = max_step
+            elif delta < -max_step:
+                delta = -max_step
+            smoothed.append(current + delta)
+        self._face_tracking_rotation_smoothed = tuple(smoothed)
+
         self.state.face_tracking_offsets = (
             raw_offsets[0] * scale,
             raw_offsets[1] * scale,
             raw_offsets[2] * scale,
-            raw_offsets[3] * scale,
-            raw_offsets[4] * scale,
-            raw_offsets[5] * scale,
+            self._face_tracking_rotation_smoothed[0],
+            self._face_tracking_rotation_smoothed[1],
+            self._face_tracking_rotation_smoothed[2],
         )
 
     def start(self) -> None:
