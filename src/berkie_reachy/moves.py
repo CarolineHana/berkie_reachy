@@ -623,7 +623,7 @@ class MovementManager:
 
         if listening:
             # Gentle ear sway while listening — opposite directions, slow
-            sway = math.radians(8) * math.sin(2 * math.pi * 0.4 * self._t_listening)
+            sway = math.radians(15) * math.sin(2 * math.pi * 0.4 * self._t_listening)
             antennas_cmd = (listening_antennas[0] + sway, listening_antennas[1] - sway)
             new_blend = 0.0
         else:

@@ -40,7 +40,7 @@ class SweepLook(Tool):
 
         # Define sweep parameters
         max_angle = 0.9 * np.pi  # Maximum rotation angle (radians)
-        transition_duration = 3.0  # Time to move between positions
+        transition_duration = 12.0  # Time to move between positions (slow, deliberate - not a whip)
         hold_duration = 1.0  # Time to hold at each extreme
 
         # Move 1: Sweep to the left (positive yaw for both body and head)
