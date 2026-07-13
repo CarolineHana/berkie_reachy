@@ -20,9 +20,14 @@ via an explicit tool call. Specifically:
 
 When `set_listening(True)` fires (from transcriber activity):
 
-- Any active `BreathingMove` is stopped immediately and the move queue is
-  cleared, so idle head-bob doesn't fight the listening animation
-  (`_poll_signals`, `command == "set_listening"`).
+- **Any active move is stopped immediately** (not just `BreathingMove` — this
+  was a bug: originally only `BreathingMove` was cleared, so an in-progress
+  `sweep_look`/dance would keep playing to completion since only the queue,
+  not the current move, was cleared) and the move queue is cleared, so
+  nothing fights the listening animation (`_poll_signals`,
+  `command == "set_listening"`). E.g. if the model triggers `sweep_look` on
+  hearing a voice mid-sweep, listening starting immediately halts it in
+  place — the robot doesn't snap back to center, it just stops where it was.
 - A slow **body-yaw oscillation** (±6° at 0.15 Hz) is added in the main
   control loop (`working_loop`, guarded by `self._is_listening`).
 - **Ear/antenna sway** replaces the old frozen antenna position: ±15° at

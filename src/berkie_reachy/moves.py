@@ -469,8 +469,9 @@ class MovementManager:
                     float(self._last_commanded_pose[1][1]),
                 )
                 self._antenna_unfreeze_blend = 0.0
-                # Stop any active breathing so the head is still while listening
-                if isinstance(self.state.current_move, BreathingMove):
+                # Stop any active move (breathing, sweep_look, dance, etc.) so the
+                # robot goes still - only body-yaw sway/ear sway animate from here
+                if self.state.current_move is not None:
                     self.state.current_move = None
                     self.state.move_start_time = None
                     self._breathing_active = False
