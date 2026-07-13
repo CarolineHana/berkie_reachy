@@ -279,6 +279,9 @@ class MovementManager:
         self._breathing_active = False  # true when breathing move is running or queued
         self._t_listening: float = 0.0  # monotonic time accumulator for listening motion
         self._last_listen_tick: float = self._now()
+        self._face_tracking_mute = 0.0  # 0 = full tracking, 1 = fully muted (listening)
+        self._face_tracking_mute_duration = 0.3  # seconds to fade tracking in/out
+        self._last_face_mute_time = self._now()
         self._listening_debounce_s = 0.15
         self._last_listening_toggle_time = self._now()
         self._last_set_target_err = 0.0
@@ -714,14 +717,35 @@ class MovementManager:
         stats.reset()
 
     def _update_face_tracking(self, current_time: float) -> None:
-        """Get face tracking offsets from camera worker thread."""
+        """Get face tracking offsets from camera worker thread, faded out while listening."""
         if self.camera_worker is not None:
-            # Get face tracking offsets from camera worker thread
-            offsets = self.camera_worker.get_face_tracking_offsets()
-            self.state.face_tracking_offsets = offsets
+            raw_offsets = self.camera_worker.get_face_tracking_offsets()
         else:
-            # No camera worker, use neutral offsets
-            self.state.face_tracking_offsets = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            raw_offsets = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+        # Keep the head still while listening (body-yaw and ear sway carry the animation
+        # instead); fade the mute in/out so re-engaging tracking doesn't snap the head.
+        dt = max(0.0, current_time - self._last_face_mute_time)
+        self._last_face_mute_time = current_time
+        target_mute = 1.0 if self._is_listening else 0.0
+        if self._face_tracking_mute_duration <= 0:
+            self._face_tracking_mute = target_mute
+        else:
+            step = dt / self._face_tracking_mute_duration
+            if self._face_tracking_mute < target_mute:
+                self._face_tracking_mute = min(target_mute, self._face_tracking_mute + step)
+            else:
+                self._face_tracking_mute = max(target_mute, self._face_tracking_mute - step)
+
+        scale = 1.0 - self._face_tracking_mute
+        self.state.face_tracking_offsets = (
+            raw_offsets[0] * scale,
+            raw_offsets[1] * scale,
+            raw_offsets[2] * scale,
+            raw_offsets[3] * scale,
+            raw_offsets[4] * scale,
+            raw_offsets[5] * scale,
+        )
 
     def start(self) -> None:
         """Start the worker thread that drives the 100 Hz control loop."""
