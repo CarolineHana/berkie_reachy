@@ -1,10 +1,10 @@
 # Available tools for this profile, remove comments to activate them
 # or use 'all' to enable all built-in tools
 
-dance
-stop_dance
-play_emotion
-stop_emotion
+#dance
+#stop_dance
+#play_emotion
+#stop_emotion
 #camera
 #do_nothing
 #head_tracking

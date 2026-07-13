@@ -62,3 +62,6 @@ src/berkie_reachy/profiles/user_personalities/
 
 # Claude Code session data
 .claude/
+
+# Local ChromaDB data (from running `chroma run` for local llm_engine testing)
+chroma/
