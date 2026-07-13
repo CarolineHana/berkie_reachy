@@ -283,7 +283,7 @@ class MovementManager:
         self._face_tracking_mute_duration = 0.3  # seconds to fade tracking in/out
         self._last_face_mute_time = self._now()
         self._face_tracking_rotation_smoothed = (0.0, 0.0, 0.0)  # roll, pitch, yaw - rate limited
-        self._max_face_tracking_rotation_rate = math.radians(30)  # cap: no fast snapping/twisting to a face
+        self._max_face_tracking_rotation_rate = math.radians(8)  # cap: slow, deliberate turn toward a tracked face
         self._last_face_tracking_tick = self._now()
         self._listening_debounce_s = 0.15
         self._last_listening_toggle_time = self._now()
