@@ -7,7 +7,28 @@ and credentials that don't exist in `llm_engine`'s local dev MongoDB
 environment. This doc records the working local setup, the bugs found and
 fixed along the way, and what's still unresolved for production.
 
-## Current state (as of 2026-07-13)
+## `llm_engine` repo git status
+
+The local `llm_engine` checkout stays **local-only, never pushed** to
+`berkmancenter/llm_engine` (no push access; commit locally only). As of
+2026-07-14 it's a few commits ahead of `origin/main`:
+- `458c548 fix(voiceAssistant): tune thresholds for Berkie BKC deployment` —
+  wake-phrase fuzzy match threshold 85→70, LangGraph recursion limit 10→25.
+- `1eafb1a` / `8b57782` — OpenRouter support added then reverted (net no-op).
+- `bf03695 Merge branch 'main' of .../llm_engine` — merged 92 upstream
+  commits in on 2026-07-14. Two real conflicts, both resolved:
+  - `config.ts`: our `localAudio` config vs. upstream's new `matomo` config
+    at the same spot — kept both.
+  - `eventQuestionHandler.ts`: our recursion-limit fix (flat `25`) vs.
+    upstream's new series-history-aware `agentRecursionLimit` (`20`/`10`).
+    Merged to `35`/`25` — keeps our tested floor for plain web_search,
+    gives series-history proportionally more on top.
+  - This pull is also what fixed the Bedrock v1/v2 blocker — see below.
+
+If you pull again later: same rule applies, resolve conflicts, keep this
+repo unpushed unless explicitly told otherwise.
+
+## Current state (as of 2026-07-13, llmPlatform updated 2026-07-14)
 
 - `llm_engine` repo: `/Users/carolinehana/llm_engine`
 - Local Mongo: `mongodb://127.0.0.1:27017/llm_engine`
@@ -16,10 +37,10 @@ fixed along the way, and what's still unresolved for production.
   - `agentType: "voiceAssistant"`
   - `agentConfig.personality: "sarcastic-expert"`
   - `agentConfig.tools: ["web_search"]`
-  - `llmPlatform: "openai"`, `llmModel: "gpt-5.2-2025-12-11"` (see Bedrock
-    blocker below for why this isn't `bedrock`)
+  - `llmPlatform: "bedrock"`, `llmModel: "us.anthropic.claude-opus-4-6-v1"`
+    (resolved as of 2026-07-14 — see below; was briefly `openai` as a
+    stopgap while Bedrock v1 was dead)
   - matches the contract in [`berky_llm_engine_contract.md`](./berky_llm_engine_contract.md)
-    except for the `llmPlatform` override
 - That agent is attached to conversation `"Berky Reachy Live Test"`
   (`_id: 6a406e1ee5e0d35f173c4469`), which has `active: true`, `enableAgents: true`.
 - `berkie_reachy/.env` points `BERKIE_LLM_ENGINE_CONVERSATION_ID` at that
@@ -69,43 +90,40 @@ by inspection alone — worth knowing about in case they recur on other agents:
    {question}
    ```
 
-## BLOCKER: local Bedrock endpoint is dead (as of 2026-07-13)
+## RESOLVED: Bedrock v1→v2 (was a blocker 2026-07-13, fixed 2026-07-14)
 
-Even with the fixes above, Berky produced no response when its `llmPlatform`
-was `bedrock`. The `llm_engine` dev server log showed every LLM call failing:
-
+Berky produced no response when `llmPlatform` was `bedrock`, because
+`llm_engine/.env`'s `BEDROCK_BASE_URL` pointed at Harvard AIS's retired v1
+staging gateway:
 ```
 Error in fetchFn: Bedrock proxy error: 410 Gone
 {"code":410,"message":"The v1 Bedrock API (ais-bedrock-llm/v1) has been
-retired and is no longer available. Please migrate to the v2 Bedrock API
-(ais-bedrock-llm/v2)... email apihelp@harvard.edu."}
+retired... Please migrate to the v2 Bedrock API (ais-bedrock-llm/v2)..."}
 ```
+A same-day blind `/v1` → `/v2` path swap 404'd, because request *shape* also
+needed to change, not just the URL — the old `claudeHandler.ts` built the
+custom v1 wrapper (`{body, modelId}`), not the native AWS Bedrock InvokeModel
+shape v2 needs. As a same-day stopgap, Berky's agent was switched to
+`llmPlatform: "openai"`.
 
-`llm_engine/.env`'s `BEDROCK_BASE_URL` is:
-```
-https://go.stage.apis.huit.harvard.edu/ais-bedrock-llm/v1
-```
-This is Harvard AIS's **staging** gateway; production may be on a different,
-still-working host. A blind `/v1` → `/v2` path swap on the same host returned
-`404 Not Found` (an HTML error page, not a JSON API error) — confirming the
-v2 API has a different request shape (it "proxies the native AWS Bedrock
-runtime and management APIs" per the error message), not just a version bump
-in the path. **Do not guess at the v2 URL/request shape** — get the real
-endpoint and, if needed, example request format from Harvard AIS
-(apihelp@harvard.edu) before touching `src/agents/helpers/claudeHandler.ts`.
+**Fixed for real** by pulling upstream `llm_engine` changes (`git pull`,
+2026-07-14) — a proper v1→v2 migration had already landed there
+(`b90f237 refactor: extract Bedrock gateway transport into its own module`,
+`7d674e4 chore: migrate Bedrock integration to V2`). New
+`src/agents/helpers/bedrockGateway.ts` builds the correct
+`{BEDROCK_BASE_URL}/model/{modelId}/invoke` request with an `x-api-key`
+header. With `BEDROCK_BASE_URL` updated to end in `/v2` (same key, same
+host, just the path) and Berky's agent switched back to
+`llmPlatform: "bedrock"` / `llmModel: "us.anthropic.claude-opus-4-6-v1"`,
+a real Claude-generated sarcastic response came back with no errors.
 
-**Current workaround**: Berky's agent document has `llmPlatform: "openai"`,
-`llmModel: "gpt-5.2-2025-12-11"` instead of the `bedrock` default, using the
-already-configured `DEFAULT_OPENAI_BASE_URL`/`DEFAULT_OPENAI_API_KEY` in
-`.env`. This is scoped to just this one agent document, not a global config
-change. Once real v2 Bedrock credentials/docs are obtained, switch back via:
+See `docs/pages/installing/index.md` in `llm_engine` for the full v2 setup
+notes (base URL should be "everything up to but not including `/model`").
 
-```js
-db.baseusers.updateOne(
-  { _id: ObjectId("6a406e1ee5e0d35f173c446b") },
-  { $set: { llmPlatform: "bedrock", llmModel: "us.anthropic.claude-opus-4-6-v1" } }
-)
-```
+If this breaks again: **don't guess at the URL/shape** — check
+`bedrockGateway.ts` first (it's the one place request construction lives
+now), and confirm `BEDROCK_BASE_URL`/`BEDROCK_API_KEY` still match what
+Harvard AIS issued.
 
 ## Running llm_engine locally
 
