@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 import json
+import time
 import base64
 import asyncio
 import logging
@@ -56,8 +57,8 @@ def _error_text(response: httpx.Response) -> str:
     return text[:500] if text else response.reason_phrase
 
 
-def _jwt_subject(token: str) -> str | None:
-    """Decode a JWT subject without verifying; auth still happens server-side."""
+def _jwt_claims(token: str) -> JsonDict | None:
+    """Decode JWT claims without verifying; auth still happens server-side."""
     parts = token.split(".")
     if len(parts) < 2:
         return None
@@ -68,8 +69,21 @@ def _jwt_subject(token: str) -> str | None:
         data = json.loads(decoded.decode("utf-8"))
     except Exception:
         return None
-    sub = data.get("sub") if isinstance(data, dict) else None
+    return data if isinstance(data, dict) else None
+
+
+def _jwt_subject(token: str) -> str | None:
+    """Decode a JWT subject without verifying; auth still happens server-side."""
+    data = _jwt_claims(token)
+    sub = data.get("sub") if data else None
     return sub.strip() if isinstance(sub, str) and sub.strip() else None
+
+
+def _jwt_expiry(token: str) -> float | None:
+    """Decode a JWT's expiry (epoch seconds) without verifying, or None if absent/unparseable."""
+    data = _jwt_claims(token)
+    exp = data.get("exp") if data else None
+    return float(exp) if isinstance(exp, (int, float)) else None
 
 
 def _transcript_channel() -> dict[str, str]:
@@ -80,12 +94,18 @@ def _transcript_channel() -> dict[str, str]:
     return channel
 
 
+# Re-authenticate this long before expiry so a slow login attempt (or one retry)
+# still finishes before the previous token actually expires.
+_TOKEN_REFRESH_MARGIN_SECONDS = 5 * 60
+
+
 @dataclass(frozen=True)
 class AuthSession:
     """Authenticated LLM Engine session details."""
 
     token: str
     user_id: str
+    expires_at: float | None  # epoch seconds; None if unknown (e.g. unparseable token)
 
 
 class LLMEngineSocketClient:
@@ -106,6 +126,7 @@ class LLMEngineSocketClient:
         )
         self._connected = asyncio.Event()
         self._initial_connect_done = False
+        self._refresh_task: asyncio.Task[None] | None = None
         self._register_handlers()
 
     def _register_handlers(self) -> None:
@@ -136,7 +157,14 @@ class LLMEngineSocketClient:
         configured_token = _strip(config.BERKIE_LLM_ENGINE_TOKEN)
         if configured_token:
             user_id = await self._fetch_user_id(configured_token)
-            return AuthSession(token=configured_token, user_id=user_id)
+            expires_at = _jwt_expiry(configured_token)
+            if expires_at is not None:
+                logger.warning(
+                    "Using a static BERKIE_LLM_ENGINE_TOKEN that expires; it cannot be "
+                    "auto-refreshed like a username/password login. Use "
+                    "BERKIE_LLM_ENGINE_USERNAME/PASSWORD instead for long-running sessions."
+                )
+            return AuthSession(token=configured_token, user_id=user_id, expires_at=expires_at)
 
         username = _strip(config.BERKIE_LLM_ENGINE_USERNAME)
         password = _strip(config.BERKIE_LLM_ENGINE_PASSWORD)
@@ -172,7 +200,8 @@ class LLMEngineSocketClient:
         if not isinstance(user_id, str) or not user_id.strip():
             user_id = await self._fetch_user_id(token)
 
-        return AuthSession(token=token.strip(), user_id=user_id.strip())
+        token = token.strip()
+        return AuthSession(token=token, user_id=user_id.strip(), expires_at=_jwt_expiry(token))
 
     async def _fetch_user_id(self, token: str) -> str:
         """Resolve the current user id from a JWT token."""
@@ -200,6 +229,49 @@ class LLMEngineSocketClient:
         await asyncio.wait_for(self._connected.wait(), timeout=10.0)
         await self.join_conversation()
         self._initial_connect_done = True
+
+        if self._refresh_task is None or self._refresh_task.done():
+            self._refresh_task = asyncio.create_task(self._refresh_loop())
+
+    async def _refresh_loop(self) -> None:
+        """Re-authenticate before the access token expires.
+
+        LLM Engine's socket auth middleware verifies the JWT on every event
+        (not just the initial join), so a session left running past the
+        token's lifetime (JWT_ACCESS_EXPIRATION_MINUTES, 30 min by default)
+        has every subsequent transcript silently rejected server-side - Berky
+        just stops responding, with no error surfaced to this client. Long
+        meetings routinely exceed that, so keep the token fresh in the
+        background for as long as the socket client is alive.
+
+        A statically configured BERKIE_LLM_ENGINE_TOKEN can't be renewed this
+        way (there's no username/password to re-login with, so re-running
+        authenticate() would just hand back the same expiring token) -
+        authenticate() already warns about that case, so this loop is a
+        no-op when that's the configured auth mode.
+        """
+        if _strip(config.BERKIE_LLM_ENGINE_TOKEN):
+            return
+
+        try:
+            while True:
+                session = self.session
+                if session is None or session.expires_at is None:
+                    # Nothing to schedule against yet; check back shortly.
+                    await asyncio.sleep(_TOKEN_REFRESH_MARGIN_SECONDS)
+                    continue
+
+                sleep_for = max(0.0, session.expires_at - time.time() - _TOKEN_REFRESH_MARGIN_SECONDS)
+                await asyncio.sleep(sleep_for)
+
+                try:
+                    self.session = await self.authenticate()
+                    logger.info("Refreshed LLM Engine auth token before expiry")
+                except Exception:
+                    logger.exception("Failed to refresh LLM Engine auth token; will retry shortly")
+                    await asyncio.sleep(30.0)
+        except asyncio.CancelledError:
+            pass
 
     async def join_conversation(self) -> None:
         """Join transcript and response rooms for the configured conversation."""
@@ -263,6 +335,9 @@ class LLMEngineSocketClient:
 
     async def disconnect(self) -> None:
         """Close the Socket.IO connection."""
+        if self._refresh_task is not None:
+            self._refresh_task.cancel()
+            self._refresh_task = None
         if self.sio.connected:
             await self.sio.disconnect()
 
