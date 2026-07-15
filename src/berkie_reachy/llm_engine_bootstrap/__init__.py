@@ -204,10 +204,19 @@ def run_bootstrap(
 
         registry.status.chroma_installed = chroma.is_chromadb_installed()
         if not registry.status.chroma_installed:
-            msg = "chromadb not installed - install the 'llm_backend' extra or call install_chromadb()."
-            registry.status.needs_action = msg
-            report("chroma", msg)
-            return StackResult(None, None, None, skipped=True)
+            # Safe to fully automate: this installs into Chroma's own isolated
+            # venv, not berkie_reachy's/reachy_mini's shared environment, so
+            # it can't conflict with reachy_mini's pinned dependencies the
+            # way installing it into the shared env did (see chroma.py).
+            report("chroma", "Installing chromadb (first run on this host)...")
+            try:
+                chroma.install_chromadb()
+                registry.status.chroma_installed = True
+            except Exception as e:
+                msg = f"Failed to install chromadb: {e}"
+                registry.status.needs_action = msg
+                report("chroma", msg)
+                return StackResult(None, None, None, skipped=True)
         chroma.ensure_chroma_running()
         registry.status.chroma_running = True
         report("chroma", "Chroma running")
@@ -272,7 +281,13 @@ def ensure_llm_engine_stack(
     bedrock_api_key: str = "",
     bedrock_base_url: str = "",
     poll_interval: float = 5.0,
-    wait_timeout: Optional[float] = 120.0,
+    # A genuinely fresh install (clone + yarn install + build + chromadb's
+    # own fairly large dependency tree) can take a few minutes end to end;
+    # 120s was too short and could time out into the OpenAI-only fallback
+    # even when the bootstrap would have succeeded moments later. Subsequent
+    # launches are fast (everything's cached/already healthy), so this only
+    # matters for the very first run on a given host.
+    wait_timeout: Optional[float] = 300.0,
 ) -> StackResult:
     """Entry point called from main.py's run(), before the use_berky_backend check.
 

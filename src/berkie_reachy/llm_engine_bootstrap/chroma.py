@@ -54,17 +54,26 @@ def install_chromadb() -> None:
     """Create the dedicated Chroma venv (if needed) and install chromadb into it.
 
     Deliberately isolated from berkie_reachy's own environment - see module
-    docstring for why.
+    docstring for why. A fresh (uncached) install can take a couple of
+    minutes - chromadb's own dependency tree is large (onnxruntime, grpcio,
+    etc.) - so this uses a generous timeout and explicitly re-checks success
+    afterward rather than only trusting that the subprocess didn't raise.
     """
     if not CHROMA_VENV_DIR.exists():
         logger.info("Creating isolated venv for ChromaDB at %s", CHROMA_VENV_DIR)
         subprocess.run([sys.executable, "-m", "venv", str(CHROMA_VENV_DIR)], check=True)
 
-    logger.info("Installing chromadb into isolated venv...")
+    logger.info("Installing chromadb into isolated venv (can take a few minutes on first run)...")
     subprocess.run(
         [str(_venv_python()), "-m", "pip", "install", "--quiet", "chromadb>=1.5"],
         check=True,
+        timeout=600,
     )
+
+    if not is_chromadb_installed():
+        raise RuntimeError(
+            "pip install reported success but chromadb still isn't importable in the isolated venv"
+        )
 
 
 def is_chroma_running() -> bool:
