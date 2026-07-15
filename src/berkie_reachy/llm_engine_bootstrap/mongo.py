@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 import logging
 import subprocess
 import time
@@ -21,9 +20,19 @@ class MongoNotAvailableError(RuntimeError):
     """Raised when the mongod binary isn't installed on this host."""
 
 
+def _mongod_path() -> Optional[str]:
+    """Resolve mongod's path, checking common install dirs beyond just PATH.
+
+    See state.find_executable's docstring: the daemon that launches this app
+    is often started via a GUI launcher with a minimal PATH, so plain
+    shutil.which() can miss a genuinely-installed mongod.
+    """
+    return state.find_executable("mongod")
+
+
 def is_mongod_available() -> bool:
-    """Return True if the ``mongod`` binary is on PATH."""
-    return shutil.which("mongod") is not None
+    """Return True if the ``mongod`` binary can be found."""
+    return _mongod_path() is not None
 
 
 def is_mongo_running() -> bool:
@@ -40,9 +49,10 @@ def ensure_mongo_running(*, timeout: float = 30.0) -> Optional[int]:
         logger.info("Reusing already-running MongoDB on port %s", state.MONGO_PORT)
         return None
 
-    if not is_mongod_available():
+    mongod_path = _mongod_path()
+    if mongod_path is None:
         raise MongoNotAvailableError(
-            "mongod not found on PATH. Install MongoDB (e.g. `brew install mongodb-community` "
+            "mongod not found. Install MongoDB (e.g. `brew install mongodb-community` "
             "on macOS, or your distro's mongodb-org package on Linux), then relaunch the app."
         )
 
@@ -50,7 +60,7 @@ def ensure_mongo_running(*, timeout: float = 30.0) -> Optional[int]:
     logfile = state.LOGS_DIR / "mongod.log"
     proc = subprocess.Popen(
         [
-            "mongod",
+            mongod_path,
             "--dbpath",
             str(state.MONGO_DATA_DIR),
             "--port",

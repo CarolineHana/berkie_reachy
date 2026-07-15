@@ -9,6 +9,7 @@ llm_engine source and its Mongo/Chroma data directories should survive that.
 from __future__ import annotations
 
 import os
+import shutil
 import socket
 import signal
 import secrets
@@ -18,6 +19,43 @@ from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# Reachy Mini apps are launched by the daemon (reachy-mini-daemon), which the
+# app-runner (reachy_mini/apps/manager.py) spawns the app subprocess from by
+# copying the daemon's *own* environment (os.environ.copy(), not a fresh
+# minimal one). So this isn't about the app subprocess getting a stripped
+# PATH - it's that the daemon *itself* is commonly launched via a GUI app
+# (e.g. a menu-bar/desktop launcher) rather than an interactive shell, and
+# GUI-launched processes on macOS/Linux typically get a minimal default PATH
+# (e.g. "/usr/bin:/bin:/usr/sbin:/sbin") that doesn't include Homebrew's
+# /opt/homebrew/bin or /usr/local/bin - so shutil.which() alone reports tools
+# as "not found" even when they're genuinely installed. Check common install
+# locations directly as a fallback, rather than only trusting PATH.
+_EXTRA_BIN_DIRS = [
+    "/opt/homebrew/bin",  # Homebrew, Apple Silicon
+    "/opt/homebrew/sbin",
+    "/usr/local/bin",  # Homebrew, Intel Mac; also common on Linux
+    "/usr/local/sbin",
+    "/usr/local/opt/node/bin",
+    "/usr/local/opt/mongodb-community/bin",
+]
+
+
+def find_executable(name: str) -> Optional[str]:
+    """Locate an executable by name, checking PATH first and then common install dirs.
+
+    Plain shutil.which() alone misses this on a GUI-launched daemon (see
+    module docstring above for why); a real install shouldn't be reported
+    as "not found" just because of how the daemon process happened to start.
+    """
+    found = shutil.which(name)
+    if found:
+        return found
+    for d in _EXTRA_BIN_DIRS:
+        candidate = Path(d) / name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
 
 APP_DATA_ROOT = Path.home() / ".berkie_reachy" / "llm_backend"
 

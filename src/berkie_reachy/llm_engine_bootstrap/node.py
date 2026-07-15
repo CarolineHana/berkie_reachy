@@ -8,7 +8,6 @@ installed on someone's machine without their consent - unlike ``chromadb``
 from __future__ import annotations
 
 import re
-import shutil
 import signal
 import logging
 import subprocess
@@ -41,7 +40,7 @@ class DetectionResult:
 
 def detect_node_and_yarn() -> DetectionResult:
     """Check for a usable Node.js + Yarn on this host, without installing anything."""
-    node_path = shutil.which("node")
+    node_path = state.find_executable("node")
     if node_path is None:
         return DetectionResult(
             node_found=False,
@@ -62,7 +61,7 @@ def detect_node_and_yarn() -> DetectionResult:
     major = int(match.group(1)) if match else None
     supported = major in SUPPORTED_NODE_MAJORS
 
-    yarn_found = shutil.which("yarn") is not None or _corepack_available()
+    yarn_found = state.find_executable("yarn") is not None or _corepack_available()
 
     instructions = None
     if not supported:
@@ -86,24 +85,25 @@ def detect_node_and_yarn() -> DetectionResult:
 
 
 def _corepack_available() -> bool:
-    return shutil.which("corepack") is not None
+    return state.find_executable("corepack") is not None
 
 
 def ensure_yarn_ready() -> str:
     """Return a working ``yarn`` command, activating the pinned version via Corepack if needed."""
-    yarn_path = shutil.which("yarn")
+    yarn_path = state.find_executable("yarn")
     if yarn_path:
         return yarn_path
 
-    if _corepack_available():
-        subprocess.run(["corepack", "enable"], check=False, capture_output=True)
+    corepack_path = state.find_executable("corepack")
+    if corepack_path:
+        subprocess.run([corepack_path, "enable"], check=False, capture_output=True)
         subprocess.run(
-            ["corepack", "prepare", f"yarn@{PINNED_YARN_VERSION}", "--activate"],
+            [corepack_path, "prepare", f"yarn@{PINNED_YARN_VERSION}", "--activate"],
             check=True,
             capture_output=True,
             text=True,
         )
-        yarn_path = shutil.which("yarn")
+        yarn_path = state.find_executable("yarn")
         if yarn_path:
             return yarn_path
 
@@ -151,11 +151,15 @@ def ensure_llm_engine_running(src_dir: Path, env: dict[str, str], *, timeout: fl
     if not entrypoint.exists():
         raise FileNotFoundError(f"llm_engine is not built yet: {entrypoint} missing")
 
+    node_path = state.find_executable("node")
+    if node_path is None:
+        raise FileNotFoundError("node executable not found (was available at detection time, now missing?)")
+
     state.ensure_dirs()
     logfile = state.LOGS_DIR / "llm_engine.log"
     with open(logfile, "wb") as log_f:
         proc = subprocess.Popen(
-            ["node", "dist/src/index.js"],
+            [node_path, "dist/src/index.js"],
             cwd=str(src_dir),
             env=env,
             stdout=log_f,
