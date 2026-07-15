@@ -139,6 +139,31 @@ def run(
     )
     logger.debug(f"Chatbot avatar images: {chatbot.avatar_images}")
 
+    # Auto-provision the local llm_engine + Bedrock backend (MongoDB, ChromaDB,
+    # the llm_engine Node service, and the Berky agent/conversation seed data)
+    # on whatever host machine is running this app. Always runs, even if a
+    # conversation ID is already persisted from a previous launch - mongod/
+    # chroma/node don't survive a reboot on their own, and ensure_*_running()
+    # reuses/health-checks rather than re-provisioning, so a repeat call here
+    # is cheap once everything's already up. Blocks briefly to give an
+    # operator a chance to enter Bedrock credentials via the settings UI on a
+    # fresh install; falls back to the legacy OpenAI-realtime path below if
+    # anything required (Node/Yarn/Mongo/chromadb/credentials) isn't ready in
+    # time - unlike console.py's OPENAI_API_KEY wait, there's a working
+    # fallback here, so blocking indefinitely would be worse, not better.
+    try:
+        from berkie_reachy.llm_engine_bootstrap import ensure_llm_engine_stack
+
+        ensure_llm_engine_stack(
+            settings_app=settings_app,
+            instance_path=instance_path,
+            stop_event=app_stop_event,
+            bedrock_api_key=config.BEDROCK_API_KEY or "",
+            bedrock_base_url=config.BEDROCK_BASE_URL or "",
+        )
+    except Exception:
+        logger.exception("llm_engine backend bootstrap failed; falling back to OpenAI-realtime mode")
+
     use_berky_backend = bool(config.BERKIE_LLM_ENGINE_CONVERSATION_ID)
     if use_berky_backend:
         handler = BerkyLiveHandler(movement_manager=movement_manager)

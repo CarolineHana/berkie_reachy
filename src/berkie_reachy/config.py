@@ -143,6 +143,11 @@ class Config:
     BERKIE_LLM_ENGINE_PASSWORD = os.getenv("BERKIE_LLM_ENGINE_PASSWORD")
     BERKIE_LLM_ENGINE_CONVERSATION_ID = os.getenv("BERKIE_LLM_ENGINE_CONVERSATION_ID")
     BERKIE_LLM_ENGINE_BOT_NAME = os.getenv("BERKIE_LLM_ENGINE_BOT_NAME")
+    # Harvard AIS Bedrock credentials for the auto-provisioned local llm_engine backend.
+    # Collected via the llm_engine_bootstrap settings UI if not already set; persisted
+    # to the instance .env once supplied (see llm_engine_bootstrap/settings_ui.py).
+    BEDROCK_API_KEY = os.getenv("BEDROCK_API_KEY")
+    BEDROCK_BASE_URL = os.getenv("BEDROCK_BASE_URL")
     BERKY_TRANSCRIPT_CHANNEL = os.getenv("BERKY_TRANSCRIPT_CHANNEL", "transcript")
     BERKY_TRANSCRIPT_CHANNEL_PASSCODE = os.getenv("BERKY_TRANSCRIPT_CHANNEL_PASSCODE")
     BERKY_RESPONSE_CHANNELS = _env_list("BERKY_RESPONSE_CHANNELS", ["chat"])

@@ -27,6 +27,7 @@ diarization = [ "pyannote.audio>=3.3.0", "soundfile>=0.12.1", "sounddevice>=0.4.
 [project.scripts]
 berkie-reachy = "berkie_reachy.main:main"
 berky-reachy = "berkie_reachy.berky_reachy:main"
+berkie-llm-backend-check = "berkie_reachy.llm_engine_bootstrap.cli:main"
 
 [tool.setuptools]
 include-package-data = true
@@ -50,7 +51,7 @@ berkie_reachy = "berkie_reachy.main:BerkieReachy"
 "" = "src"
 
 [tool.setuptools.package-data]
-berkie_reachy = [ "images/*", "static/*", ".env.example", "demos/**/*.txt", "prompts_library/*.txt", "profiles/**/*.txt", "prompts/**/*.txt",]
+berkie_reachy = [ "images/*", "static/*", ".env.example", "demos/**/*.txt", "prompts_library/*.txt", "profiles/**/*.txt", "prompts/**/*.txt", "llm_engine_bootstrap/patches/*.patch",]
 
 [tool.ruff.lint]
 select = [ "E", "F", "W", "I", "C4", "D",]

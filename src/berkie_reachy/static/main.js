@@ -133,4 +133,150 @@ async function init() {
   });
 }
 
-window.addEventListener("DOMContentLoaded", init);
+const LLM_BACKEND_STEPS = [
+  { key: "node_found", label: "Node.js found" },
+  { key: "yarn_ready", label: "Yarn ready" },
+  { key: "mongo_running", label: "MongoDB running" },
+  { key: "chroma_running", label: "ChromaDB running" },
+  { key: "llm_engine_healthy", label: "llm_engine running" },
+  { key: "seeded", label: "Berky conversation ready" },
+];
+
+async function fetchLlmBackendStatus() {
+  try {
+    const resp = await fetchWithTimeout("/llm_backend/status", {}, 2000);
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch (e) {
+    return null;
+  }
+}
+
+async function saveBedrockCredentials(apiKey, baseUrl) {
+  const resp = await fetch("/llm_backend/bedrock_credentials", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ bedrock_api_key: apiKey, bedrock_base_url: baseUrl }),
+  });
+  if (!resp.ok) {
+    const data = await resp.json().catch(() => ({}));
+    throw new Error(data.error || "save_failed");
+  }
+  return await resp.json();
+}
+
+async function skipLlmBackend() {
+  const resp = await fetch("/llm_backend/skip", { method: "POST" });
+  if (!resp.ok) throw new Error("skip_failed");
+  return await resp.json();
+}
+
+function renderLlmBackendChecklist(listEl, status) {
+  listEl.innerHTML = "";
+  for (const step of LLM_BACKEND_STEPS) {
+    const li = document.createElement("li");
+    const done = !!status[step.key];
+    li.className = done ? "done" : "";
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    li.appendChild(dot);
+    li.appendChild(document.createTextNode(step.label));
+    listEl.appendChild(li);
+  }
+}
+
+async function initLlmBackendPanel() {
+  const panel = document.getElementById("llm-backend-panel");
+  const chip = document.getElementById("llm-backend-chip");
+  const checklist = document.getElementById("llm-backend-checklist");
+  const needsEl = document.getElementById("llm-backend-needs");
+  const form = document.getElementById("llm-backend-form");
+  const apiKeyInput = document.getElementById("bedrock-api-key");
+  const baseUrlInput = document.getElementById("bedrock-base-url");
+  const saveBtn = document.getElementById("llm-backend-save-btn");
+  const skipBtn = document.getElementById("llm-backend-skip-btn");
+  const statusEl = document.getElementById("llm-backend-status");
+
+  // Only show this panel at all if the llm_backend routes are actually mounted
+  // (they aren't when the app is running in plain OpenAI-only mode).
+  const initialStatus = await fetchLlmBackendStatus();
+  if (!initialStatus) return;
+
+  show(panel, true);
+
+  let polling = true;
+  const poll = async () => {
+    while (polling) {
+      const status = await fetchLlmBackendStatus();
+      if (status) {
+        renderLlmBackendChecklist(checklist, status);
+        if (status.done) {
+          chip.textContent = "Ready";
+          chip.className = "chip chip-ok";
+          show(form, false);
+          show(needsEl, false);
+          polling = false;
+          break;
+        } else if (status.skipped) {
+          chip.textContent = "Skipped";
+          show(form, false);
+          show(needsEl, false);
+          polling = false;
+          break;
+        } else {
+          chip.textContent = "Setting up";
+          const needs = await fetch("/llm_backend/needs")
+            .then((r) => r.json())
+            .catch(() => ({}));
+          if (needs.instructions) {
+            needsEl.textContent = needs.instructions;
+            show(needsEl, true);
+          } else {
+            show(needsEl, false);
+          }
+          show(form, true);
+        }
+      }
+      await sleep(3000);
+    }
+  };
+  poll();
+
+  saveBtn.addEventListener("click", async () => {
+    const apiKey = apiKeyInput.value.trim();
+    const baseUrl = baseUrlInput.value.trim();
+    if (!apiKey || !baseUrl) {
+      statusEl.textContent = "Enter both the Bedrock API key and base URL.";
+      statusEl.className = "status warn";
+      return;
+    }
+    statusEl.textContent = "Saving...";
+    statusEl.className = "status";
+    try {
+      await saveBedrockCredentials(apiKey, baseUrl);
+      statusEl.textContent = "Saved. Trying to connect...";
+      statusEl.className = "status ok";
+    } catch (e) {
+      statusEl.textContent = "Failed to save credentials. Please try again.";
+      statusEl.className = "status error";
+    }
+  });
+
+  skipBtn.addEventListener("click", async () => {
+    statusEl.textContent = "Skipping local backend...";
+    statusEl.className = "status";
+    try {
+      await skipLlmBackend();
+      statusEl.textContent = "Skipped. Using plain OpenAI conversation mode.";
+      statusEl.className = "status ok";
+    } catch (e) {
+      statusEl.textContent = "Failed to skip. Please try again.";
+      statusEl.className = "status error";
+    }
+  });
+}
+
+window.addEventListener("DOMContentLoaded", () => {
+  init();
+  initLlmBackendPanel();
+});

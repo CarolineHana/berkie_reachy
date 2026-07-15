@@ -47,6 +47,39 @@
           <p id="status" class="status"></p>
         </div>
       </div>
+
+      <div id="llm-backend-panel" class="panel hidden">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Berky backend</p>
+            <h2>Local Bedrock backend</h2>
+          </div>
+          <span id="llm-backend-chip" class="chip">Setting up</span>
+        </div>
+        <p class="muted">
+          Provisions MongoDB, ChromaDB, and the llm_engine service locally so Berky can answer with the
+          sarcastic-expert personality. Optional - skip to use the plain OpenAI conversation app instead.
+        </p>
+        <ul id="llm-backend-checklist" class="checklist"></ul>
+        <p id="llm-backend-needs" class="muted hidden"></p>
+
+        <div id="llm-backend-form" class="hidden">
+          <label for="bedrock-api-key">Bedrock API Key</label>
+          <input id="bedrock-api-key" type="password" placeholder="Bedrock gateway API key" autocomplete="off" />
+          <label for="bedrock-base-url">Bedrock Base URL</label>
+          <input
+            id="bedrock-base-url"
+            type="text"
+            placeholder="https://.../ais-bedrock-llm/v2"
+            autocomplete="off"
+          />
+          <div class="actions">
+            <button id="llm-backend-save-btn">Save credentials</button>
+            <button id="llm-backend-skip-btn" class="ghost">Skip - use OpenAI only</button>
+            <p id="llm-backend-status" class="status"></p>
+          </div>
+        </div>
+      </div>
     </div>
 
     <script src="/static/main.js"></script>

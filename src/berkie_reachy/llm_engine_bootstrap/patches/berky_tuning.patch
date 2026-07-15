@@ -1,0 +1,48 @@
+diff --git a/src/agents/eventAssistant/voiceAssistant.ts b/src/agents/eventAssistant/voiceAssistant.ts
+index a732c20..e6000b0 100644
+--- a/src/agents/eventAssistant/voiceAssistant.ts
++++ b/src/agents/eventAssistant/voiceAssistant.ts
+@@ -8,7 +8,7 @@ import { matchBotMention, normalizeBotMention } from '../helpers/intentChecks.js
+ import logger from '../../config/logger.js'
+ import getDefaultEventAssistantToolNames from './eventAssistantDefaultTools.js'
+ 
+-const heyMatchThreshold = 85
++const heyMatchThreshold = 70
+ 
+ function matchHeyDirective(text: string, botName: string): { matched: boolean; question: string } {
+   // Split and scan all consecutive word pairs for "hey <botName>" anywhere in the message
+diff --git a/src/agents/eventAssistant/eventQuestionHandler.ts b/src/agents/eventAssistant/eventQuestionHandler.ts
+index 16dd10c..2f1cdcb 100644
+--- a/src/agents/eventAssistant/eventQuestionHandler.ts
++++ b/src/agents/eventAssistant/eventQuestionHandler.ts
+@@ -557,7 +557,7 @@ export async function answerQuestion(userMessage, conversationHistory, options?)
+     // Series history adds 3 tools (get_event_list, search_topic_transcripts, search_conversation_transcript);
+     // a full research workflow across past events consumes more LangGraph supersteps than the
+     // web-search-only case, so give more headroom when that feature is active.
+-    const agentRecursionLimit = series ? 20 : 10
++    const agentRecursionLimit = series ? 35 : 25
+     const agentBundle = (await getAgentStructuredResponse(
+       llm,
+       tools,
+diff --git a/.husky/prepare-commit-msg b/.husky/prepare-commit-msg
+index 693facc..8d98c38 100644
+--- a/.husky/prepare-commit-msg
++++ b/.husky/prepare-commit-msg
+@@ -8,10 +8,13 @@ else
+   # For non-interactive commits (using -m flag), check for breaking changes
+   echo "Non-interactive commit detected. Performing breaking changes check..."
+   
+-  # Restore terminal input for the prompt
+-  exec < /dev/tty
+-  
+-  read -p "Does this commit introduce breaking changes? (y/N): " breaking
++  # Restore terminal input for the prompt; default to N if no TTY available
++  if [ -t 0 ] || exec < /dev/tty 2>/dev/null; then
++    read -p "Does this commit introduce breaking changes? (y/N): " breaking
++  else
++    breaking="N"
++    echo "No TTY available — defaulting to no breaking changes."
++  fi
+   
+   if [ "$breaking" = "y" ] || [ "$breaking" = "Y" ]; then
+     echo ""
