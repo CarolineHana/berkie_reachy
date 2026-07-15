@@ -340,8 +340,15 @@ class LocalStream:
             except Exception:
                 pass  # Instance .env loading is optional; continue with defaults
 
+        # OPENAI_API_KEY is only actually needed by OpenaiRealtimeHandler (the
+        # legacy conversation app). When a different handler is in use (e.g.
+        # BerkyLiveHandler, backed by llm_engine + Bedrock), there's nothing
+        # for this key to do here - downloading one and blocking startup on
+        # it would gate an unrelated backend on a credential it doesn't use.
+        needs_openai_key = isinstance(self.handler, OpenaiRealtimeHandler)
+
         # If key is still missing, try to download one from HuggingFace
-        if not (config.OPENAI_API_KEY and str(config.OPENAI_API_KEY).strip()):
+        if needs_openai_key and not (config.OPENAI_API_KEY and str(config.OPENAI_API_KEY).strip()):
             logger.info("OPENAI_API_KEY not set, attempting to download from HuggingFace...")
             try:
                 from gradio_client import Client
@@ -359,7 +366,7 @@ class LocalStream:
         self._init_settings_ui_if_needed()
 
         # If key is still missing -> wait until provided via the settings UI
-        if not (config.OPENAI_API_KEY and str(config.OPENAI_API_KEY).strip()):
+        if needs_openai_key and not (config.OPENAI_API_KEY and str(config.OPENAI_API_KEY).strip()):
             logger.warning("OPENAI_API_KEY not found. Open the app settings page to enter it.")
             # Poll until the key becomes available (set via the settings UI)
             try:
