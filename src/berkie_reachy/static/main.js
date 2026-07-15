@@ -204,8 +204,22 @@ async function initLlmBackendPanel() {
   const statusEl = document.getElementById("llm-backend-status");
 
   // Only show this panel at all if the llm_backend routes are actually mounted
-  // (they aren't when the app is running in plain OpenAI-only mode).
-  const initialStatus = await fetchLlmBackendStatus();
+  // (they aren't when the app is running in plain OpenAI-only mode). Retry
+  // for a while rather than giving up after one check - these routes mount
+  // as soon as main.py's run() reaches the bootstrap call, but that can be
+  // a few seconds into startup (robot connection, vision setup, etc. happen
+  // first), and a single failed check here used to permanently hide the
+  // panel for the rest of the page's lifetime (only a full reload, e.g. the
+  // one triggered by saving an OpenAI key elsewhere on this page, gave it
+  // another chance - which looked like "the panel appears after entering an
+  // OpenAI key" but was really just incidental timing).
+  let initialStatus = null;
+  const deadline = Date.now() + 60000;
+  while (Date.now() < deadline) {
+    initialStatus = await fetchLlmBackendStatus();
+    if (initialStatus) break;
+    await sleep(1000);
+  }
   if (!initialStatus) return;
 
   show(panel, true);
