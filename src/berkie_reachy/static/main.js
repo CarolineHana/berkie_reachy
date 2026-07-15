@@ -75,9 +75,15 @@ async function init() {
   show(formPanel, false);
   show(configuredPanel, false);
 
-  const st = (await waitForStatus()) || { has_key: false };
+  const st = (await waitForStatus()) || { has_key: false, needs_openai_key: true };
 
-  if (st.has_key) {
+  // needs_openai_key is false when the active handler (e.g. the Bedrock/
+  // llm_engine backend) doesn't use OpenAI at all - showing this panel in
+  // that case just invites confusion over a credential that isn't needed.
+  if (st.needs_openai_key === false) {
+    show(formPanel, false);
+    show(configuredPanel, false);
+  } else if (st.has_key) {
     show(configuredPanel, true);
   } else {
     show(formPanel, true);

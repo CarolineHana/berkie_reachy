@@ -70,6 +70,9 @@ class LocalStream:
         self._instance_path: Optional[str] = instance_path
         self._settings_initialized = False
         self._asyncio_loop = None
+        # Set for real in launch(); defaults to True (legacy behavior) so the
+        # settings UI doesn't hide the OpenAI panel before launch() has run.
+        self._needs_openai_key = True
 
     # ---- Settings UI (only when API key is missing) ----
     def _read_env_lines(self, env_path: Path) -> list[str]:
@@ -256,7 +259,7 @@ class LocalStream:
         @self._settings_app.get("/status")
         def _status() -> JSONResponse:
             has_key = bool(config.OPENAI_API_KEY and str(config.OPENAI_API_KEY).strip())
-            return JSONResponse({"has_key": has_key})
+            return JSONResponse({"has_key": has_key, "needs_openai_key": self._needs_openai_key})
 
         # GET /ready -> whether backend finished loading tools
         @self._settings_app.get("/ready")
@@ -346,6 +349,7 @@ class LocalStream:
         # for this key to do here - downloading one and blocking startup on
         # it would gate an unrelated backend on a credential it doesn't use.
         needs_openai_key = isinstance(self.handler, OpenaiRealtimeHandler)
+        self._needs_openai_key = needs_openai_key
 
         # If key is still missing, try to download one from HuggingFace
         if needs_openai_key and not (config.OPENAI_API_KEY and str(config.OPENAI_API_KEY).strip()):
