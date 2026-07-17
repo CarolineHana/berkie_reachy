@@ -21,10 +21,17 @@ except Exception:  # pragma: no cover - only loaded when settings_app is used
 
 
 class BedrockCredentials(BaseModel):
-    """Payload for POST /llm_backend/bedrock_credentials."""
+    """Payload for POST /llm_backend/bedrock_credentials.
+
+    openai_api_key is separate from Bedrock: embeddings (RAG topic/transcript
+    vector storage, hit as soon as a topic is created) need their own
+    OpenAI-compatible key regardless of which platform handles chat. Optional
+    here since it may already be set via the legacy OpenAI panel/config.
+    """
 
     bedrock_api_key: str
     bedrock_base_url: str
+    openai_api_key: str = ""
 
 
 def mount_routes(app: "FastAPI", registry, instance_path=None) -> None:
@@ -61,10 +68,17 @@ def mount_routes(app: "FastAPI", registry, instance_path=None) -> None:
 
         api_key = payload.bedrock_api_key.strip()
         base_url = payload.bedrock_base_url.strip()
+        openai_key = payload.openai_api_key.strip()
         registry.set_bedrock_credentials(api_key, base_url)
         # Persist immediately so the operator doesn't have to re-enter these
         # every launch (mirrors console.py's OPENAI_API_KEY persistence).
-        _persist_config(instance_path, {"BEDROCK_API_KEY": api_key, "BEDROCK_BASE_URL": base_url})
+        updates = {"BEDROCK_API_KEY": api_key, "BEDROCK_BASE_URL": base_url}
+        if openai_key:
+            registry.set_openai_api_key(openai_key)
+            # Same config attribute console.py's OPENAI_API_KEY flow uses, so
+            # either panel can supply it and both consumers see the same value.
+            updates["OPENAI_API_KEY"] = openai_key
+        _persist_config(instance_path, updates)
         # Clear any stale "waiting for credentials" message and un-skip so the
         # background retry loop picks the new values up on its next attempt.
         registry.status.needs_action = None

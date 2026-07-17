@@ -73,6 +73,13 @@
             placeholder="https://.../ais-bedrock-llm/v2"
             autocomplete="off"
           />
+          <label for="llm-backend-openai-key">OpenAI API Key (for embeddings/RAG)</label>
+          <input
+            id="llm-backend-openai-key"
+            type="password"
+            placeholder="sk-... (separate from Bedrock, used only for topic search)"
+            autocomplete="off"
+          />
           <div class="actions">
             <button id="llm-backend-save-btn">Save credentials</button>
             <button id="llm-backend-skip-btn" class="ghost">Skip - use OpenAI only</button>

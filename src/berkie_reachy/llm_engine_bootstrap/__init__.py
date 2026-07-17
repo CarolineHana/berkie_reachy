@@ -63,12 +63,17 @@ class _Registry:
         self.lock = threading.Lock()
         self.bedrock_api_key = ""
         self.bedrock_base_url = ""
+        self.openai_api_key = ""
         self.result: Optional["StackResult"] = None
 
     def set_bedrock_credentials(self, api_key: str, base_url: str) -> None:
         with self.lock:
             self.bedrock_api_key = api_key
             self.bedrock_base_url = base_url
+
+    def set_openai_api_key(self, api_key: str) -> None:
+        with self.lock:
+            self.openai_api_key = api_key
 
 
 def _read_persisted_config(instance_path: Optional[str]) -> tuple[Optional[str], Optional[str], Optional[str]]:
@@ -122,7 +127,21 @@ def _persist_config(instance_path: Optional[str], updates: dict[str, str]) -> No
     env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _build_llm_engine_env(bedrock_api_key: str, bedrock_base_url: str) -> dict[str, str]:
+def _resolve_openai_key(explicit: str = "") -> str:
+    """Resolve an OpenAI-compatible key for embeddings.
+
+    Prefers an explicitly-supplied value (e.g. entered in the Bedrock settings
+    panel), then falls back to berkie_reachy's own OPENAI_API_KEY (already
+    collected via console.py's first-run flow, when that flow is in use).
+    """
+    if explicit:
+        return explicit
+    from berkie_reachy.config import config as berkie_config
+
+    return getattr(berkie_config, "OPENAI_API_KEY", None) or os.getenv("OPENAI_API_KEY", "")
+
+
+def _build_llm_engine_env(bedrock_api_key: str, bedrock_base_url: str, openai_api_key: str) -> dict[str, str]:
     """Build the env for the llm_engine child process.
 
     Bedrock credentials cover chat completions. Embeddings (used for RAG -
@@ -130,12 +149,7 @@ def _build_llm_engine_env(bedrock_api_key: str, bedrock_base_url: str) -> dict[s
     *separate* OpenAI-specific dependency (DEFAULT_OPENAI_API_KEY /
     DEFAULT_EMBEDDINGS_API_KEY in llm_engine's config) - found the hard way
     when topic creation 500'd with "Missing credentials" during testing.
-    Reuse berkie_reachy's own OPENAI_API_KEY (already collected via
-    console.py's existing first-run flow) rather than asking the operator
-    for a third credential.
     """
-    from berkie_reachy.config import config as berkie_config
-
     env = dict(os.environ)
     env.update(
         {
@@ -149,9 +163,8 @@ def _build_llm_engine_env(bedrock_api_key: str, bedrock_base_url: str) -> dict[s
             "BEDROCK_BASE_URL": bedrock_base_url,
         }
     )
-    openai_key = getattr(berkie_config, "OPENAI_API_KEY", None) or os.getenv("OPENAI_API_KEY", "")
-    if openai_key:
-        env["DEFAULT_OPENAI_API_KEY"] = openai_key
+    if openai_api_key:
+        env["DEFAULT_OPENAI_API_KEY"] = openai_api_key
     return env
 
 
@@ -160,6 +173,7 @@ def run_bootstrap(
     instance_path: Optional[str] = None,
     bedrock_api_key: str = "",
     bedrock_base_url: str = "",
+    openai_api_key: str = "",
     registry: Optional[_Registry] = None,
     on_progress: Optional[ProgressCallback] = None,
 ) -> StackResult:
@@ -188,6 +202,23 @@ def run_bootstrap(
             msg = "BEDROCK_API_KEY/BEDROCK_BASE_URL not configured yet - waiting for operator input."
             registry.status.needs_action = msg
             report("bedrock", msg)
+            return StackResult(None, None, None, skipped=True)
+
+        # Embeddings (used for RAG - topic/transcript vector storage, hit as
+        # soon as a topic is created) need their own OpenAI-compatible key,
+        # separate from Bedrock. Check for one *before* attempting to seed,
+        # rather than letting llm_engine 500 with a generic "Internal Server
+        # Error" that hides the real "Missing credentials" cause (found the
+        # hard way - the actual error only shows up in llm_engine's own log).
+        resolved_openai_key = _resolve_openai_key(openai_api_key)
+        if not resolved_openai_key:
+            msg = (
+                "OpenAI API key not configured yet - needed for embeddings (RAG topic/transcript "
+                "vector storage), separate from the Bedrock credentials above. Enter one on the "
+                "settings page to continue."
+            )
+            registry.status.needs_action = msg
+            report("openai_embeddings", msg)
             return StackResult(None, None, None, skipped=True)
 
         src_dir = repo.ensure_llm_engine_source()
@@ -224,7 +255,7 @@ def run_bootstrap(
         yarn_cmd = node.ensure_yarn_ready()
         node.ensure_dependencies_installed(src_dir, yarn_cmd)
         node.ensure_built(src_dir, yarn_cmd)
-        env = _build_llm_engine_env(bedrock_api_key, bedrock_base_url)
+        env = _build_llm_engine_env(bedrock_api_key, bedrock_base_url, resolved_openai_key)
         node.ensure_llm_engine_running(src_dir, env)
         registry.status.llm_engine_healthy = True
         report("llm_engine", "llm_engine healthy")
@@ -280,6 +311,7 @@ def ensure_llm_engine_stack(
     stop_event: Optional[threading.Event] = None,
     bedrock_api_key: str = "",
     bedrock_base_url: str = "",
+    openai_api_key: str = "",
     poll_interval: float = 5.0,
     # A genuinely fresh install (clone + yarn install + build + chromadb's
     # own fairly large dependency tree) can take a few minutes end to end;
@@ -306,6 +338,7 @@ def ensure_llm_engine_stack(
     registry = _Registry()
     registry.bedrock_api_key = bedrock_api_key
     registry.bedrock_base_url = bedrock_base_url
+    registry.openai_api_key = openai_api_key
 
     if settings_app is not None:
         try:
@@ -327,11 +360,13 @@ def ensure_llm_engine_stack(
             with registry.lock:
                 api_key = registry.bedrock_api_key
                 base_url = registry.bedrock_base_url
+                openai_key = registry.openai_api_key
             try:
                 result = run_bootstrap(
                     instance_path=instance_path,
                     bedrock_api_key=api_key,
                     bedrock_base_url=base_url,
+                    openai_api_key=openai_key,
                     registry=registry,
                 )
                 if not result.skipped:

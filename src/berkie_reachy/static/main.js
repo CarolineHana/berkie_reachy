@@ -158,11 +158,11 @@ async function fetchLlmBackendStatus() {
   }
 }
 
-async function saveBedrockCredentials(apiKey, baseUrl) {
+async function saveBedrockCredentials(apiKey, baseUrl, openaiKey) {
   const resp = await fetch("/llm_backend/bedrock_credentials", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ bedrock_api_key: apiKey, bedrock_base_url: baseUrl }),
+    body: JSON.stringify({ bedrock_api_key: apiKey, bedrock_base_url: baseUrl, openai_api_key: openaiKey }),
   });
   if (!resp.ok) {
     const data = await resp.json().catch(() => ({}));
@@ -199,6 +199,7 @@ async function initLlmBackendPanel() {
   const form = document.getElementById("llm-backend-form");
   const apiKeyInput = document.getElementById("bedrock-api-key");
   const baseUrlInput = document.getElementById("bedrock-base-url");
+  const openaiKeyInput = document.getElementById("llm-backend-openai-key");
   const saveBtn = document.getElementById("llm-backend-save-btn");
   const skipBtn = document.getElementById("llm-backend-skip-btn");
   const statusEl = document.getElementById("llm-backend-status");
@@ -265,15 +266,19 @@ async function initLlmBackendPanel() {
   saveBtn.addEventListener("click", async () => {
     const apiKey = apiKeyInput.value.trim();
     const baseUrl = baseUrlInput.value.trim();
+    const openaiKey = openaiKeyInput.value.trim();
     if (!apiKey || !baseUrl) {
       statusEl.textContent = "Enter both the Bedrock API key and base URL.";
       statusEl.className = "status warn";
       return;
     }
+    // openaiKey is optional here - it may already be configured (e.g. via the
+    // legacy OpenAI panel or a previous save). The backend will report a
+    // clear needs_action message if it's actually still missing.
     statusEl.textContent = "Saving...";
     statusEl.className = "status";
     try {
-      await saveBedrockCredentials(apiKey, baseUrl);
+      await saveBedrockCredentials(apiKey, baseUrl, openaiKey);
       statusEl.textContent = "Saved. Trying to connect...";
       statusEl.className = "status ok";
     } catch (e) {

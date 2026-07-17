@@ -160,6 +160,7 @@ def run(
             stop_event=app_stop_event,
             bedrock_api_key=config.BEDROCK_API_KEY or "",
             bedrock_base_url=config.BEDROCK_BASE_URL or "",
+            openai_api_key=config.OPENAI_API_KEY or "",
         )
     except Exception:
         logger.exception("llm_engine backend bootstrap failed; falling back to OpenAI-realtime mode")
