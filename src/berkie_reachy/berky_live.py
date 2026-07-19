@@ -2,8 +2,9 @@
 
 This handler is used by the Reachy Mini Gradio app on port 7860.
 It accepts browser microphone audio, transcribes it locally with Whisper,
-sends finalized transcript chunks to LLM Engine over Socket.IO, and plays
-agent replies through the local TTS command.
+sends finalized transcript chunks to LLM Engine over Socket.IO, and
+synthesizes agent replies to raw audio samples for playback through the
+robot's own speaker.
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ class BerkyLiveHandler(AsyncStreamHandler):
 
     def __init__(self, movement_manager: Optional[Any] = None) -> None:
         super().__init__(expected_layout="mono", output_sample_rate=16000, input_sample_rate=16000)
-        self.output_queue: "asyncio.Queue[AdditionalOutputs]" = asyncio.Queue()
+        self.output_queue: "asyncio.Queue[AdditionalOutputs | Tuple[int, NDArray[Any]]]" = asyncio.Queue()
         self.transcriber = LocalWhisperSegmenter()
         self.tts = CommandTTS()
         self.client = LLMEngineSocketClient(on_agent_message=self._on_agent_message)
@@ -69,21 +70,36 @@ class BerkyLiveHandler(AsyncStreamHandler):
             self._movement_manager.set_speech_offsets((0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
 
     async def _on_agent_message(self, message: dict[str, Any]) -> None:
-        """Speak and display one agent message."""
+        """Speak and display one agent message.
+
+        Synthesizes to raw samples and enqueues them as a plain tuple, which
+        console.py's play_loop recognizes and pushes through robot.media -
+        the robot's own speaker - rather than calling self.tts.speak(), which
+        would play through this host machine's local audio output instead.
+        """
         text = _message_text(message)
         if not text:
             return
 
+        synth = await self.tts.synthesize(text)
+        duration = (len(synth[1]) / synth[0]) if synth is not None else 0.0
+
         if self._movement_manager is not None:
             stop_anim = asyncio.Event()
             anim_task = asyncio.create_task(self._speaking_animation(stop_anim))
-            try:
-                await self.tts.speak(text)
-            finally:
-                stop_anim.set()
-                await anim_task
+
+        if synth is not None:
+            await self.output_queue.put(synth)
         else:
+            # No file-capable TTS binary found; fall back to direct playback
+            # on this machine so the response is at least audible somewhere.
             await self.tts.speak(text)
+
+        if self._movement_manager is not None:
+            if duration > 0:
+                await asyncio.sleep(duration)
+            stop_anim.set()
+            await anim_task
 
         await self.output_queue.put(AdditionalOutputs({"role": "assistant", "content": text}))
 
@@ -109,7 +125,7 @@ class BerkyLiveHandler(AsyncStreamHandler):
         except Exception:
             logger.warning("Failed to send transcript — LLM Engine disconnected, will retry on reconnect")
 
-    async def emit(self) -> AdditionalOutputs | None:
+    async def emit(self) -> AdditionalOutputs | Tuple[int, NDArray[Any]] | None:
         """Emit chatbot updates when they are available."""
         return await wait_for_item(self.output_queue)  # type: ignore[no-any-return]
 
