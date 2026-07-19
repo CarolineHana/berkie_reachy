@@ -24,6 +24,19 @@ index 16dd10c..2f1cdcb 100644
      const agentBundle = (await getAgentStructuredResponse(
        llm,
        tools,
+diff --git a/src/agents/helpers/intentChecks.ts b/src/agents/helpers/intentChecks.ts
+index f564bde..18d2fc1 100644
+--- a/src/agents/helpers/intentChecks.ts
++++ b/src/agents/helpers/intentChecks.ts
+@@ -7,7 +7,7 @@ const intentCheckSchema = z.object({
+   intended_for_bot: z.boolean()
+ })
+
+-const nameMatchThreshold = 70
++const nameMatchThreshold = 55
+
+ /**
+  * Checks if a message contains a mention of the bot, allowing for minor misspellings.
 diff --git a/.husky/prepare-commit-msg b/.husky/prepare-commit-msg
 index 693facc..8d98c38 100644
 --- a/.husky/prepare-commit-msg

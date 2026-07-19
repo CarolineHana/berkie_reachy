@@ -90,7 +90,14 @@ def ensure_seeded(
     *,
     existing: Optional[SeedResult],
     persist_credentials: Callable[[str, str], None],
-    conversation_name: str = "Berky Reachy Live",
+    # This becomes the literal "## Event topic" line in every prompt
+    # (eventQuestionHandler.ts: `const topic = options?.topic || this.conversation.name`
+    # - there's no separate description field fed to the LLM) - naming it
+    # generically meant Berky had no way to know "BKC" means Berkman Klein
+    # Center short of a live web search happening to resolve it (it didn't;
+    # BKC is also a Mumbai business district, so search wasn't reliable
+    # here anyway). Spell it out so it's always in context.
+    conversation_name: str = "Berkman Klein Center (BKC) - Berky Reachy Live",
     timeout: float = 15.0,
 ) -> SeedResult:
     """Ensure a Berky operator account, topic, and conversation exist; return their details.
