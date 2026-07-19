@@ -32,6 +32,7 @@ class BedrockCredentials(BaseModel):
     bedrock_api_key: str
     bedrock_base_url: str
     openai_api_key: str = ""
+    tavily_api_key: str = ""
 
 
 def mount_routes(app: "FastAPI", registry, instance_path=None) -> None:
@@ -69,6 +70,7 @@ def mount_routes(app: "FastAPI", registry, instance_path=None) -> None:
         api_key = payload.bedrock_api_key.strip()
         base_url = payload.bedrock_base_url.strip()
         openai_key = payload.openai_api_key.strip()
+        tavily_key = payload.tavily_api_key.strip()
         registry.set_bedrock_credentials(api_key, base_url)
         # Persist immediately so the operator doesn't have to re-enter these
         # every launch (mirrors console.py's OPENAI_API_KEY persistence).
@@ -78,6 +80,9 @@ def mount_routes(app: "FastAPI", registry, instance_path=None) -> None:
             # Same config attribute console.py's OPENAI_API_KEY flow uses, so
             # either panel can supply it and both consumers see the same value.
             updates["OPENAI_API_KEY"] = openai_key
+        if tavily_key:
+            registry.set_tavily_api_key(tavily_key)
+            updates["TAVILY_API_KEY"] = tavily_key
         _persist_config(instance_path, updates)
         # Clear any stale "waiting for credentials" message and un-skip so the
         # background retry loop picks the new values up on its next attempt.

@@ -64,6 +64,7 @@ class _Registry:
         self.bedrock_api_key = ""
         self.bedrock_base_url = ""
         self.openai_api_key = ""
+        self.tavily_api_key = ""
         self.result: Optional["StackResult"] = None
 
     def set_bedrock_credentials(self, api_key: str, base_url: str) -> None:
@@ -74,6 +75,10 @@ class _Registry:
     def set_openai_api_key(self, api_key: str) -> None:
         with self.lock:
             self.openai_api_key = api_key
+
+    def set_tavily_api_key(self, api_key: str) -> None:
+        with self.lock:
+            self.tavily_api_key = api_key
 
 
 def _read_persisted_config(instance_path: Optional[str]) -> tuple[Optional[str], Optional[str], Optional[str]]:
@@ -141,7 +146,22 @@ def _resolve_openai_key(explicit: str = "") -> str:
     return getattr(berkie_config, "OPENAI_API_KEY", None) or os.getenv("OPENAI_API_KEY", "")
 
 
-def _build_llm_engine_env(bedrock_api_key: str, bedrock_base_url: str, openai_api_key: str) -> dict[str, str]:
+def _resolve_tavily_key(explicit: str = "") -> str:
+    """Resolve a Tavily API key for the web_search tool, if configured.
+
+    Optional - unlike Bedrock/OpenAI, missing this doesn't block the bootstrap;
+    llm_engine's web_search tool just fails gracefully per-call without it.
+    """
+    if explicit:
+        return explicit
+    from berkie_reachy.config import config as berkie_config
+
+    return getattr(berkie_config, "TAVILY_API_KEY", None) or os.getenv("TAVILY_API_KEY", "")
+
+
+def _build_llm_engine_env(
+    bedrock_api_key: str, bedrock_base_url: str, openai_api_key: str, tavily_api_key: str = ""
+) -> dict[str, str]:
     """Build the env for the llm_engine child process.
 
     Bedrock credentials cover chat completions. Embeddings (used for RAG -
@@ -165,6 +185,8 @@ def _build_llm_engine_env(bedrock_api_key: str, bedrock_base_url: str, openai_ap
     )
     if openai_api_key:
         env["DEFAULT_OPENAI_API_KEY"] = openai_api_key
+    if tavily_api_key:
+        env["TAVILY_API_KEY"] = tavily_api_key
     return env
 
 
@@ -174,6 +196,7 @@ def run_bootstrap(
     bedrock_api_key: str = "",
     bedrock_base_url: str = "",
     openai_api_key: str = "",
+    tavily_api_key: str = "",
     registry: Optional[_Registry] = None,
     on_progress: Optional[ProgressCallback] = None,
 ) -> StackResult:
@@ -255,7 +278,8 @@ def run_bootstrap(
         yarn_cmd = node.ensure_yarn_ready()
         node.ensure_dependencies_installed(src_dir, yarn_cmd)
         node.ensure_built(src_dir, yarn_cmd)
-        env = _build_llm_engine_env(bedrock_api_key, bedrock_base_url, resolved_openai_key)
+        resolved_tavily_key = _resolve_tavily_key(tavily_api_key)
+        env = _build_llm_engine_env(bedrock_api_key, bedrock_base_url, resolved_openai_key, resolved_tavily_key)
         node.ensure_llm_engine_running(src_dir, env)
         registry.status.llm_engine_healthy = True
         report("llm_engine", "llm_engine healthy")
@@ -312,6 +336,7 @@ def ensure_llm_engine_stack(
     bedrock_api_key: str = "",
     bedrock_base_url: str = "",
     openai_api_key: str = "",
+    tavily_api_key: str = "",
     poll_interval: float = 5.0,
     # A genuinely fresh install (clone + yarn install + build + chromadb's
     # own fairly large dependency tree) can take a few minutes end to end;
@@ -339,6 +364,7 @@ def ensure_llm_engine_stack(
     registry.bedrock_api_key = bedrock_api_key
     registry.bedrock_base_url = bedrock_base_url
     registry.openai_api_key = openai_api_key
+    registry.tavily_api_key = tavily_api_key
 
     if settings_app is not None:
         try:
@@ -361,12 +387,14 @@ def ensure_llm_engine_stack(
                 api_key = registry.bedrock_api_key
                 base_url = registry.bedrock_base_url
                 openai_key = registry.openai_api_key
+                tavily_key = registry.tavily_api_key
             try:
                 result = run_bootstrap(
                     instance_path=instance_path,
                     bedrock_api_key=api_key,
                     bedrock_base_url=base_url,
                     openai_api_key=openai_key,
+                    tavily_api_key=tavily_key,
                     registry=registry,
                 )
                 if not result.skipped:

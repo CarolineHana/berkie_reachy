@@ -148,6 +148,9 @@ class Config:
     # to the instance .env once supplied (see llm_engine_bootstrap/settings_ui.py).
     BEDROCK_API_KEY = os.getenv("BEDROCK_API_KEY")
     BEDROCK_BASE_URL = os.getenv("BEDROCK_BASE_URL")
+    # Tavily API key for llm_engine's web_search tool. Optional - without it,
+    # web_search just fails gracefully per-call rather than blocking startup.
+    TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
     BERKY_TRANSCRIPT_CHANNEL = os.getenv("BERKY_TRANSCRIPT_CHANNEL", "transcript")
     BERKY_TRANSCRIPT_CHANNEL_PASSCODE = os.getenv("BERKY_TRANSCRIPT_CHANNEL_PASSCODE")
     BERKY_RESPONSE_CHANNELS = _env_list("BERKY_RESPONSE_CHANNELS", ["chat"])
