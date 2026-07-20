@@ -155,7 +155,11 @@ class Config:
     BERKY_TRANSCRIPT_CHANNEL_PASSCODE = os.getenv("BERKY_TRANSCRIPT_CHANNEL_PASSCODE")
     BERKY_RESPONSE_CHANNELS = _env_list("BERKY_RESPONSE_CHANNELS", ["chat"])
     BERKY_WAKE_PHRASE = os.getenv("BERKY_WAKE_PHRASE", "hey berkie")
-    BERKY_WHISPER_MODEL = os.getenv("BERKY_WHISPER_MODEL", "base.en")
+    # small.en trades a bit of latency for meaningfully better accuracy on the
+    # wake phrase itself - base.en was mis-hearing "hey berkie" too often
+    # (Birky, murky, working, Ricky, ...), most of which fall below even a
+    # loosened fuzzy-match threshold and silently drop the wake attempt.
+    BERKY_WHISPER_MODEL = os.getenv("BERKY_WHISPER_MODEL", "small.en")
     BERKY_WHISPER_DEVICE = os.getenv("BERKY_WHISPER_DEVICE", "auto")
     BERKY_WHISPER_COMPUTE_TYPE = os.getenv("BERKY_WHISPER_COMPUTE_TYPE", "default")
     BERKY_TRANSCRIBE_WINDOW_SECONDS = _env_float("BERKY_TRANSCRIBE_WINDOW_SECONDS", 6.0)
