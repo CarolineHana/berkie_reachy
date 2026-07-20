@@ -1,8 +1,15 @@
-"""Speaker diarization for Berkie Reachy."""
+"""Speaker diarization client for Berkie Reachy.
+
+Talks to an isolated diarization server (see diarization_bootstrap/) over a
+tiny local HTTP/JSON protocol rather than importing pyannote.audio directly -
+that dependency tree bumps protobuf to a version incompatible with mediapipe
+(used for optional head tracking), so pyannote is fully isolated into its own
+venv+subprocess instead of sharing berkie_reachy's own environment.
+"""
 
 from __future__ import annotations
 
-import io
+import base64
 import logging
 from typing import TYPE_CHECKING, Optional
 
@@ -13,63 +20,35 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_MODEL_ID = "pyannote/speaker-diarization-3.1"
-
 
 class Diarizer:
-    """Lazy-loads the pyannote pipeline on first use to avoid startup cost."""
+    """Aligns ASR segments with speaker turns via the isolated diarization server."""
 
     def __init__(self, hf_token: Optional[str] = None, device: str = "cpu") -> None:
-        self._token = hf_token
-        self._device = device
-        self._pipeline = None
+        from berkie_reachy.diarization_bootstrap import ensure_diarization_stack
 
-    def _load(self) -> None:
-        if self._pipeline is not None:
-            return
-        try:
-            from pyannote.audio import Pipeline  # type: ignore
-        except ImportError as exc:
-            raise ImportError(
-                "pyannote.audio is not installed. "
-                "Run: pip install 'pyannote.audio>=3.3.0' soundfile"
-            ) from exc
+        # Provisions (or reuses) the isolated venv+server on first construction;
+        # returns None (never raises) if that fails for any reason.
+        self._base_url = ensure_diarization_stack(hf_token=hf_token, device=device)
 
-        logger.info("Loading %s (first call)…", _MODEL_ID)
-        self._pipeline = Pipeline.from_pretrained(_MODEL_ID, token=self._token)
-        if self._device == "cuda":
-            import torch  # type: ignore
-            self._pipeline = self._pipeline.to(torch.device("cuda"))
-        logger.info("pyannote pipeline ready.")
-
-    def _run(self, audio: np.ndarray, sample_rate: int) -> list[tuple[float, float, str]]:
-        try:
-            self._load()
-        except Exception:
-            logger.exception("pyannote pipeline failed to load")
+    def _run(self, audio: np.ndarray, sample_rate: int, segments: list[dict]) -> list[tuple[str, str]]:
+        if not self._base_url:
             return []
-        import soundfile as sf  # type: ignore
-        buf = io.BytesIO()
-        sf.write(buf, audio, sample_rate, format="WAV")
-        buf.seek(0)
         try:
-            result = self._pipeline({"uri": "seg", "audio": buf})
-        except Exception:
-            logger.exception("pyannote diarization failed")
-            return []
-        # pyannote 4.x wraps output in DiarizeOutput; 3.x returns Annotation directly
-        annotation = getattr(result, "speaker_diarization", result)
-        return [(t.start, t.end, sp) for t, _, sp in annotation.itertracks(yield_label=True)]
+            import httpx
 
-    def dominant_speaker(self, audio: np.ndarray, sample_rate: int = 16000) -> str:
-        """Return the label of the speaker who talked longest in this chunk."""
-        segs = self._run(audio, sample_rate)
-        if not segs:
-            return "SPEAKER_00"
-        totals: dict[str, float] = {}
-        for start, end, sp in segs:
-            totals[sp] = totals.get(sp, 0.0) + (end - start)
-        return max(totals, key=totals.__getitem__)
+            audio_i16 = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
+            payload = {
+                "audio_b64": base64.b64encode(audio_i16.tobytes()).decode("ascii"),
+                "sample_rate": sample_rate,
+                "segments": segments,
+            }
+            resp = httpx.post(f"{self._base_url}/align", json=payload, timeout=30.0)
+            resp.raise_for_status()
+            return [(sp, text) for sp, text in resp.json()["aligned"]]
+        except Exception:
+            logger.exception("Diarization request failed")
+            return []
 
     def align_with_asr(
         self,
@@ -77,25 +56,12 @@ class Diarizer:
         audio: np.ndarray,
         sample_rate: int = 16000,
     ) -> list[tuple[str, str]]:
-        """Align pyannote speaker turns with faster-whisper Segment objects.
+        """Align speaker turns with faster-whisper Segment objects.
 
         Returns [(speaker_label, text), …] — one entry per diarization turn
-        that overlaps with ASR text. Falls back to a single anonymous turn
-        if diarization returns nothing.
+        that overlaps with ASR text. Falls back to an empty list (caller
+        already treats that the same as "diarization unavailable") if the
+        isolated server can't be reached.
         """
-        diarization = self._run(audio, sample_rate)
-        if not diarization:
-            full = " ".join(s.text.strip() for s in asr_segments if s.text.strip())
-            return [("SPEAKER_00", full)] if full else []
-
-        result: list[tuple[str, str]] = []
-        for start, end, speaker in diarization:
-            words = [
-                seg.text.strip()
-                for seg in asr_segments
-                if seg.start < end and seg.end > start and seg.text.strip()
-            ]
-            text = " ".join(words).strip()
-            if text:
-                result.append((speaker, text))
-        return result
+        segments = [{"start": s.start, "end": s.end, "text": s.text} for s in asr_segments]
+        return self._run(audio, sample_rate, segments)

@@ -22,7 +22,6 @@ yolo_vision = [ "ultralytics", "supervision",]
 mediapipe_vision = [ "mediapipe==0.10.14",]
 all_vision = [ "torch>=2.1", "transformers==5.0.0rc2", "num2words", "ultralytics", "supervision", "mediapipe==0.10.14",]
 berky_voice = [ "faster-whisper>=1.1.0",]
-diarization = [ "pyannote.audio>=3.3.0", "soundfile>=0.12.1", "sounddevice>=0.4.6",]
 
 [project.scripts]
 berkie-reachy = "berkie_reachy.main:main"
