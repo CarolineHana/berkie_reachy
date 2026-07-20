@@ -623,8 +623,10 @@ class MovementManager:
         self._last_listening_blend_time = now
 
         if listening:
-            # Gentle ear sway while listening — opposite directions, slow
-            sway = math.radians(15) * math.sin(2 * math.pi * 0.4 * self._t_listening)
+            # Ear sway synced to the same slow phase clock as the body-yaw
+            # sweep (see the 100Hz loop) rather than its own faster rate -
+            # two independent oscillation speeds at once read as twitchy.
+            sway = math.radians(10) * math.sin(2 * math.pi * 0.08 * self._t_listening)
             antennas_cmd = (listening_antennas[0] + sway, listening_antennas[1] - sway)
             new_blend = 0.0
         else:
@@ -886,13 +888,20 @@ class MovementManager:
             head, antennas, body_yaw = self._compose_full_body_pose(loop_start)
 
             # 4b) Accumulate listening timer and add body-yaw rotation while listening
+            #
+            # The sweep's phase clock (_t_listening) always keeps running,
+            # even while not listening - only whether it's *added* to
+            # body_yaw is gated on _is_listening. Resetting the phase to 0
+            # whenever listening briefly flickered off (VAD-based
+            # is_listening toggles on natural micro-pauses in speech, faster
+            # than a user perceives "listening" as having stopped) snapped
+            # the sweep back to center every time, which read as twitchy
+            # rather than a continuous slow sweep.
             dt_tick = loop_start - self._last_listen_tick
             self._last_listen_tick = loop_start
+            self._t_listening += dt_tick
             if self._is_listening:
-                self._t_listening += dt_tick
-                body_yaw += math.radians(6) * math.sin(2 * math.pi * 0.15 * self._t_listening)
-            else:
-                self._t_listening = 0.0
+                body_yaw += math.radians(10) * math.sin(2 * math.pi * 0.08 * self._t_listening)
 
             # 5) Apply listening antenna sway or blend-back
             antennas_cmd = self._calculate_blended_antennas(antennas)
