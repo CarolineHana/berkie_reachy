@@ -279,6 +279,17 @@ class MovementManager:
         self._breathing_active = False  # true when breathing move is running or queued
         self._t_listening: float = 0.0  # monotonic time accumulator for listening motion
         self._last_listen_tick: float = self._now()
+        # Rate-limit the listening sweep itself (body-yaw + ear sway), same
+        # pattern as face tracking below - the sine target is smooth, but
+        # commanding it directly snaps to whatever the target is *this tick*,
+        # which visibly jumps if the 100Hz control loop's actual tick timing
+        # goes irregular (e.g. under CPU load from Whisper/diarization
+        # running on the same machine) rather than advancing in small,
+        # even steps. Rate-limiting the commanded value guarantees smooth
+        # motion regardless of tick jitter.
+        self._listening_yaw_sway_smoothed = 0.0
+        self._listening_antenna_sway_smoothed = 0.0
+        self._max_listening_sway_rate = math.radians(20)
         self._face_tracking_mute = 0.0  # 0 = full tracking, 1 = fully muted (listening)
         self._face_tracking_mute_duration = 0.3  # seconds to fade tracking in/out
         self._last_face_mute_time = self._now()
@@ -626,7 +637,14 @@ class MovementManager:
             # Ear sway synced to the same slow phase clock as the body-yaw
             # sweep (see the 100Hz loop) rather than its own faster rate -
             # two independent oscillation speeds at once read as twitchy.
-            sway = math.radians(10) * math.sin(2 * math.pi * 0.08 * self._t_listening)
+            # Rate-limited the same way as the body-yaw sweep - see its
+            # comment for why (irregular tick timing under CPU load).
+            dt_sway = max(0.0, now - last_update)
+            target_sway = math.radians(10) * math.sin(2 * math.pi * 0.08 * self._t_listening)
+            max_step = self._max_listening_sway_rate * dt_sway
+            delta = max(-max_step, min(max_step, target_sway - self._listening_antenna_sway_smoothed))
+            self._listening_antenna_sway_smoothed += delta
+            sway = self._listening_antenna_sway_smoothed
             antennas_cmd = (listening_antennas[0] + sway, listening_antennas[1] - sway)
             new_blend = 0.0
         else:
@@ -900,8 +918,14 @@ class MovementManager:
             dt_tick = loop_start - self._last_listen_tick
             self._last_listen_tick = loop_start
             self._t_listening += dt_tick
+
+            target_yaw_sway = 0.0
             if self._is_listening:
-                body_yaw += math.radians(10) * math.sin(2 * math.pi * 0.08 * self._t_listening)
+                target_yaw_sway = math.radians(10) * math.sin(2 * math.pi * 0.08 * self._t_listening)
+            max_step = self._max_listening_sway_rate * dt_tick
+            delta = max(-max_step, min(max_step, target_yaw_sway - self._listening_yaw_sway_smoothed))
+            self._listening_yaw_sway_smoothed += delta
+            body_yaw += self._listening_yaw_sway_smoothed
 
             # 5) Apply listening antenna sway or blend-back
             antennas_cmd = self._calculate_blended_antennas(antennas)
