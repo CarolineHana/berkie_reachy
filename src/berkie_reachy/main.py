@@ -181,7 +181,7 @@ def run(
 
     use_berky_backend = bool(config.BERKIE_LLM_ENGINE_CONVERSATION_ID)
     if use_berky_backend:
-        handler = BerkyLiveHandler(movement_manager=movement_manager)
+        handler = BerkyLiveHandler(movement_manager=movement_manager, head_wobbler=head_wobbler)
     else:
         handler = OpenaiRealtimeHandler(deps, gradio_mode=args.gradio, instance_path=instance_path)
 
