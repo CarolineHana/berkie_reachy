@@ -1,16 +1,33 @@
 diff --git a/src/agents/eventAssistant/voiceAssistant.ts b/src/agents/eventAssistant/voiceAssistant.ts
-index a732c20..e6000b0 100644
+index a732c20..7bf67ea 100644
 --- a/src/agents/eventAssistant/voiceAssistant.ts
 +++ b/src/agents/eventAssistant/voiceAssistant.ts
 @@ -8,7 +8,7 @@ import { matchBotMention, normalizeBotMention } from '../helpers/intentChecks.js
  import logger from '../../config/logger.js'
  import getDefaultEventAssistantToolNames from './eventAssistantDefaultTools.js'
- 
+
 -const heyMatchThreshold = 85
 +const heyMatchThreshold = 70
- 
+
  function matchHeyDirective(text: string, botName: string): { matched: boolean; question: string } {
    // Split and scan all consecutive word pairs for "hey <botName>" anywhere in the message
+@@ -19,7 +19,15 @@ function matchHeyDirective(text: string, botName: string): { matched: boolean; q
+     const heyToken = words[i].replace(/[,!.]+$/, '')
+     const heyScore = fuzzball.ratio(heyToken.toLowerCase(), 'hey')
+
+-    if (heyScore >= heyMatchThreshold && matchBotMention(words, botName)) {
++    // Only check the single word immediately after "hey" for the bot name -
++    // matchBotMention(words, botName) previously scanned the ENTIRE message,
++    // which caused false positives: "they" alone fuzzy-matches "hey" at 86
++    // (well above heyMatchThreshold), so any message containing "they"/
++    // "their" plus any word elsewhere resembling the bot name - including a
++    // garbled ASR mistranscription unrelated to an actual wake attempt -
++    // triggered a full response. Confirmed live: "They ... I haven't Berkie
++    // it" triggered a response though "hey berkie" was never said.
++    if (heyScore >= heyMatchThreshold && matchBotMention([words[i + 1]], botName)) {
+       const extracted = words
+         .slice(i + 2)
+         .join(' ')
 diff --git a/src/agents/eventAssistant/eventQuestionHandler.ts b/src/agents/eventAssistant/eventQuestionHandler.ts
 index 16dd10c..2f1cdcb 100644
 --- a/src/agents/eventAssistant/eventQuestionHandler.ts
