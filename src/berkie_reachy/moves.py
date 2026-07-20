@@ -277,6 +277,21 @@ class MovementManager:
         self._antenna_blend_duration = 0.4  # seconds to blend back after listening
         self._last_listening_blend_time = self._now()
         self._breathing_active = False  # true when breathing move is running or queued
+        # Body-yaw sweep while listening. Phase clock always keeps running,
+        # even while not listening - only whether it's *added* to body_yaw is
+        # gated on _is_listening - so brief listening flicker (VAD-based,
+        # toggles on natural speech micro-pauses) never snaps the sweep back
+        # to center. Commanded value is rate-limited rather than jumping
+        # straight to the sine target each tick, so irregular control-loop
+        # timing (e.g. under CPU load from Whisper/diarization) can't cause a
+        # visible jump either. Deliberately doesn't touch antennas - an
+        # earlier version added antenna sway here too, anchored to a snapshot
+        # re-captured on every listening restart, which compounded into
+        # drift; antennas are left as a plain freeze (see set_listening).
+        self._t_listening: float = 0.0
+        self._last_listen_tick: float = self._now()
+        self._listening_yaw_sway_smoothed = 0.0
+        self._max_listening_sway_rate = math.radians(12)
         self._face_tracking_mute = 0.0  # 0 = full tracking, 1 = fully muted (listening)
         self._face_tracking_mute_duration = 0.3  # seconds to fade tracking in/out
         self._last_face_mute_time = self._now()
@@ -894,6 +909,21 @@ class MovementManager:
 
             # 4) Build primary and secondary full-body poses, then fuse them
             head, antennas, body_yaw = self._compose_full_body_pose(loop_start)
+
+            # 4b) Sweep body-yaw left/right while listening (see __init__ for
+            # why the phase clock never resets and the commanded value is
+            # rate-limited).
+            dt_tick = loop_start - self._last_listen_tick
+            self._last_listen_tick = loop_start
+            self._t_listening += dt_tick
+
+            target_yaw_sway = 0.0
+            if self._is_listening:
+                target_yaw_sway = math.radians(16) * math.sin(2 * math.pi * 0.08 * self._t_listening)
+            max_step = self._max_listening_sway_rate * dt_tick
+            delta = max(-max_step, min(max_step, target_yaw_sway - self._listening_yaw_sway_smoothed))
+            self._listening_yaw_sway_smoothed += delta
+            body_yaw += self._listening_yaw_sway_smoothed
 
             # 5) Apply listening antenna freeze or blend-back
             antennas_cmd = self._calculate_blended_antennas(antennas)
