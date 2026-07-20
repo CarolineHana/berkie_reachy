@@ -291,7 +291,7 @@ class MovementManager:
         self._t_listening: float = 0.0
         self._last_listen_tick: float = self._now()
         self._listening_yaw_sway_smoothed = 0.0
-        self._max_listening_sway_rate = math.radians(12)
+        self._max_listening_sway_rate = math.radians(18)
         self._face_tracking_mute = 0.0  # 0 = full tracking, 1 = fully muted (listening)
         self._face_tracking_mute_duration = 0.3  # seconds to fade tracking in/out
         self._last_face_mute_time = self._now()
@@ -919,7 +919,7 @@ class MovementManager:
 
             target_yaw_sway = 0.0
             if self._is_listening:
-                target_yaw_sway = math.radians(16) * math.sin(2 * math.pi * 0.08 * self._t_listening)
+                target_yaw_sway = math.radians(28) * math.sin(2 * math.pi * 0.08 * self._t_listening)
             max_step = self._max_listening_sway_rate * dt_tick
             delta = max(-max_step, min(max_step, target_yaw_sway - self._listening_yaw_sway_smoothed))
             self._listening_yaw_sway_smoothed += delta
