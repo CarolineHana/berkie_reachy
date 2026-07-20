@@ -464,20 +464,33 @@ class MovementManager:
         elif command == "set_listening":
             desired_state = bool(payload)
             now = self._now()
+            if self._is_listening == desired_state:
+                # Not a real transition - don't touch the debounce timer here,
+                # or a burst of same-state calls (this fires on every audio
+                # frame) keeps refreshing it and can delay/deny the next
+                # genuine transition.
+                return
             if now - self._last_listening_toggle_time < self._listening_debounce_s:
                 return
             self._last_listening_toggle_time = now
 
-            if self._is_listening == desired_state:
-                return
-
             self._is_listening = desired_state
             self._last_listening_blend_time = now
             if desired_state:
-                # Freeze: snapshot current commanded antennas and reset blend
+                # Freeze around the *pre-sway* antenna position, not
+                # whatever's currently commanded (which includes the sway
+                # offset from the previous listening session). Baking the
+                # sway into the new anchor point, while the sway itself also
+                # keeps running continuously (never reset - see the 100Hz
+                # loop), compounded on every listening restart: each
+                # start/stop cycle added the prior sway offset again on top,
+                # producing a drifting/jumping anchor rather than a fixed
+                # center to sweep around - the actual source of the visible
+                # "little bursts", not just tick-timing jitter.
+                prev_sway = self._listening_antenna_sway_smoothed
                 self._listening_antennas = (
-                    float(self._last_commanded_pose[1][0]),
-                    float(self._last_commanded_pose[1][1]),
+                    float(self._last_commanded_pose[1][0]) - prev_sway,
+                    float(self._last_commanded_pose[1][1]) + prev_sway,
                 )
                 self._antenna_unfreeze_blend = 0.0
                 # Stop any active move (breathing, sweep_look, dance, etc.) so the
