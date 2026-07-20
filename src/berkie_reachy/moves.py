@@ -331,6 +331,7 @@ class MovementManager:
         self._shared_state_lock = threading.Lock()
         self._shared_last_activity_time = self.state.last_activity_time
         self._shared_is_listening = self._is_listening
+        self._shared_listening_yaw_sway = 0.0
         self._status_lock = threading.Lock()
         self._freq_stats = LoopFrequencyStats()
         self._freq_snapshot = LoopFrequencyStats()
@@ -504,6 +505,12 @@ class MovementManager:
         with self._shared_state_lock:
             self._shared_last_activity_time = self.state.last_activity_time
             self._shared_is_listening = self._is_listening
+            self._shared_listening_yaw_sway = self._listening_yaw_sway_smoothed
+
+    def get_listening_yaw_sway(self) -> float:
+        """Current body-yaw listening sway, in radians - so callers (e.g. the head-yaw scan) can move in sync with it."""
+        with self._shared_state_lock:
+            return self._shared_listening_yaw_sway
 
     def _manage_move_queue(self, current_time: float) -> None:
         """Manage the primary move queue (sequential execution)."""

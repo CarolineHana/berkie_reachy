@@ -9,7 +9,6 @@ robot's own speaker.
 
 from __future__ import annotations
 
-import math
 import base64
 import asyncio
 import logging
@@ -57,34 +56,24 @@ class BerkyLiveHandler(AsyncStreamHandler):
         logger.info("Berky live handler connected to LLM Engine")
 
     async def _listening_scan_loop(self) -> None:
-        """Slowly rotate head left-right while the user is speaking.
+        """Rotate head left-right in sync with MovementManager's body-yaw sweep.
 
-        Deliberately simple and self-contained: a smooth, continuously-
-        running sine wave driving set_speech_offsets directly, restored from
-        an earlier version of this behavior after a more elaborate redesign
-        (sinusoidal body-yaw + antenna sway integrated into MovementManager's
-        100Hz control loop, gated on the same is_listening signal) turned out
-        fragile - repeated listening restarts (common: VAD-based is_active
-        toggles per utterance) caused compounding drift/twitch despite
-        several rounds of targeted fixes. This approach only ever runs one
-        task at a time (start is a no-op while already running) and only
-        touches head yaw via the same offset mechanism the speaking-nod
-        already uses, so it can't drift or fight with anything else in
-        MovementManager's freeze/blend machinery.
+        Reads the body-yaw sweep's own current value (get_listening_yaw_sway)
+        rather than running an independent sine wave - an earlier version
+        used its own separate frequency/phase, so the head and body swept at
+        different rates instead of moving together. Reading the shared value
+        directly guarantees exact sync regardless of when this task started
+        relative to the body sweep's own phase clock.
         """
-        YAW_AMP = math.radians(10)
-        YAW_FREQ = 0.2
         ZERO = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         dt = 0.05
-        t = 0.0
         try:
             while True:
-                yaw = YAW_AMP * math.sin(2 * math.pi * YAW_FREQ * t)
                 try:
+                    yaw = self._movement_manager.get_listening_yaw_sway()
                     self._movement_manager.set_speech_offsets((0.0, 0.0, 0.0, 0.0, 0.0, yaw))
                 except Exception:
                     pass
-                t += dt
                 await asyncio.sleep(dt)
         except asyncio.CancelledError:
             try:
