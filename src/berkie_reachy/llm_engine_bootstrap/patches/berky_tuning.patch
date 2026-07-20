@@ -1,59 +1,3 @@
-diff --git a/src/agents/eventAssistant/voiceAssistant.ts b/src/agents/eventAssistant/voiceAssistant.ts
-index a732c20..7bf67ea 100644
---- a/src/agents/eventAssistant/voiceAssistant.ts
-+++ b/src/agents/eventAssistant/voiceAssistant.ts
-@@ -8,7 +8,7 @@ import { matchBotMention, normalizeBotMention } from '../helpers/intentChecks.js
- import logger from '../../config/logger.js'
- import getDefaultEventAssistantToolNames from './eventAssistantDefaultTools.js'
-
--const heyMatchThreshold = 85
-+const heyMatchThreshold = 70
-
- function matchHeyDirective(text: string, botName: string): { matched: boolean; question: string } {
-   // Split and scan all consecutive word pairs for "hey <botName>" anywhere in the message
-@@ -19,7 +19,15 @@ function matchHeyDirective(text: string, botName: string): { matched: boolean; q
-     const heyToken = words[i].replace(/[,!.]+$/, '')
-     const heyScore = fuzzball.ratio(heyToken.toLowerCase(), 'hey')
-
--    if (heyScore >= heyMatchThreshold && matchBotMention(words, botName)) {
-+    // Only check the single word immediately after "hey" for the bot name -
-+    // matchBotMention(words, botName) previously scanned the ENTIRE message,
-+    // which caused false positives: "they" alone fuzzy-matches "hey" at 86
-+    // (well above heyMatchThreshold), so any message containing "they"/
-+    // "their" plus any word elsewhere resembling the bot name - including a
-+    // garbled ASR mistranscription unrelated to an actual wake attempt -
-+    // triggered a full response. Confirmed live: "They ... I haven't Berkie
-+    // it" triggered a response though "hey berkie" was never said.
-+    if (heyScore >= heyMatchThreshold && matchBotMention([words[i + 1]], botName)) {
-       const extracted = words
-         .slice(i + 2)
-         .join(' ')
-diff --git a/src/agents/eventAssistant/eventQuestionHandler.ts b/src/agents/eventAssistant/eventQuestionHandler.ts
-index 16dd10c..2f1cdcb 100644
---- a/src/agents/eventAssistant/eventQuestionHandler.ts
-+++ b/src/agents/eventAssistant/eventQuestionHandler.ts
-@@ -557,7 +557,7 @@ export async function answerQuestion(userMessage, conversationHistory, options?)
-     // Series history adds 3 tools (get_event_list, search_topic_transcripts, search_conversation_transcript);
-     // a full research workflow across past events consumes more LangGraph supersteps than the
-     // web-search-only case, so give more headroom when that feature is active.
--    const agentRecursionLimit = series ? 20 : 10
-+    const agentRecursionLimit = series ? 35 : 25
-     const agentBundle = (await getAgentStructuredResponse(
-       llm,
-       tools,
-diff --git a/src/agents/helpers/intentChecks.ts b/src/agents/helpers/intentChecks.ts
-index f564bde..18d2fc1 100644
---- a/src/agents/helpers/intentChecks.ts
-+++ b/src/agents/helpers/intentChecks.ts
-@@ -7,7 +7,7 @@ const intentCheckSchema = z.object({
-   intended_for_bot: z.boolean()
- })
-
--const nameMatchThreshold = 70
-+const nameMatchThreshold = 55
-
- /**
-  * Checks if a message contains a mention of the bot, allowing for minor misspellings.
 diff --git a/.husky/prepare-commit-msg b/.husky/prepare-commit-msg
 index 693facc..8d98c38 100644
 --- a/.husky/prepare-commit-msg
@@ -76,3 +20,75 @@ index 693facc..8d98c38 100644
    
    if [ "$breaking" = "y" ] || [ "$breaking" = "Y" ]; then
      echo ""
+diff --git a/src/agents/eventAssistant/eventQuestionHandler.ts b/src/agents/eventAssistant/eventQuestionHandler.ts
+index 16dd10c..2f1cdcb 100644
+--- a/src/agents/eventAssistant/eventQuestionHandler.ts
++++ b/src/agents/eventAssistant/eventQuestionHandler.ts
+@@ -557,7 +557,7 @@ export async function answerQuestion(userMessage, conversationHistory, options?)
+     // Series history adds 3 tools (get_event_list, search_topic_transcripts, search_conversation_transcript);
+     // a full research workflow across past events consumes more LangGraph supersteps than the
+     // web-search-only case, so give more headroom when that feature is active.
+-    const agentRecursionLimit = series ? 20 : 10
++    const agentRecursionLimit = series ? 35 : 25
+     const agentBundle = (await getAgentStructuredResponse(
+       llm,
+       tools,
+diff --git a/src/agents/eventAssistant/voiceAssistant.ts b/src/agents/eventAssistant/voiceAssistant.ts
+index a732c20..210fd8b 100644
+--- a/src/agents/eventAssistant/voiceAssistant.ts
++++ b/src/agents/eventAssistant/voiceAssistant.ts
+@@ -1,4 +1,3 @@
+-import * as fuzzball from 'fuzzball'
+ import verify from '../helpers/verify.js'
+ import { AgentMessageActions, ConversationHistory, IMessage } from '../../types/index.types.js'
+ import { defaultLLMModel, defaultLLMPlatform } from '../helpers/getModelChat.js'
+@@ -8,18 +7,29 @@ import { matchBotMention, normalizeBotMention } from '../helpers/intentChecks.js
+ import logger from '../../config/logger.js'
+ import getDefaultEventAssistantToolNames from './eventAssistantDefaultTools.js'
+ 
+-const heyMatchThreshold = 85
+-
+ function matchHeyDirective(text: string, botName: string): { matched: boolean; question: string } {
+   // Split and scan all consecutive word pairs for "hey <botName>" anywhere in the message
+   const words = text.trim().split(/\s+/)
+   if (words.length < 2) return { matched: false, question: '' }
+-  
+-  for (let i = 0; i < words.length - 1; i++) {
+-    const heyToken = words[i].replace(/[,!.]+$/, '')
+-    const heyScore = fuzzball.ratio(heyToken.toLowerCase(), 'hey')
+ 
+-    if (heyScore >= heyMatchThreshold && matchBotMention(words, botName)) {
++  for (let i = 0; i < words.length - 1; i++) {
++    const heyToken = words[i].replace(/[,!.]+$/, '').toLowerCase()
++
++    // "hey" itself is checked for an EXACT match, not a fuzzy one - it's a
++    // short, common, unambiguous word Whisper transcribes reliably (unlike
++    // the made-up bot name, where fuzzy matching earns its keep). Fuzzy
++    // matching "hey" backfired: fuzzball scores the ordinary word "they" at
++    // 86 against "hey" (well above any reasonable threshold), so ANY
++    // message containing "they"/"their" immediately followed by anything
++    // resembling the bot name - including a garbled ASR mistranscription
++    // with zero relation to an actual wake attempt - triggered a full
++    // response. Confirmed live twice: "I haven't Berkie it" and "these
++    // Berkie stumpy because they Berkie the only ones" (repeated ASR
++    // hallucination of the bot name) both triggered responses though "hey
++    // berkie" was never said. Only checking the word right after "hey" (an
++    // earlier attempt at this fix) wasn't enough on its own, since "they"
++    // can itself be immediately followed by a stray "Berkie" hallucination.
++    if (heyToken === 'hey' && matchBotMention([words[i + 1]], botName)) {
+       const extracted = words
+         .slice(i + 2)
+         .join(' ')
+diff --git a/src/agents/helpers/intentChecks.ts b/src/agents/helpers/intentChecks.ts
+index f564bde..18d2fc1 100644
+--- a/src/agents/helpers/intentChecks.ts
++++ b/src/agents/helpers/intentChecks.ts
+@@ -7,7 +7,7 @@ const intentCheckSchema = z.object({
+   intended_for_bot: z.boolean()
+ })
+ 
+-const nameMatchThreshold = 70
++const nameMatchThreshold = 55
+ 
+ /**
+  * Checks if a message contains a mention of the bot, allowing for minor misspellings.
