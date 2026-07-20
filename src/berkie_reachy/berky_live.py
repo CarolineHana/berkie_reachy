@@ -25,8 +25,8 @@ from berkie_reachy.tts import CommandTTS
 logger = logging.getLogger(__name__)
 
 _SPEAKING_UPDATE_HZ = 20
-_SPEAKING_PITCH_AMP = 0.1    # radians (~5.7°) visible nod
-_SPEAKING_YAW_AMP = 0.05     # radians (~2.9°) subtle turn
+_SPEAKING_PITCH_AMP = 0.16   # radians (~9.2°) clearly visible nod
+_SPEAKING_YAW_AMP = 0.08     # radians (~4.6°) subtle turn
 _SPEAKING_PITCH_FREQ = 0.5   # Hz
 _SPEAKING_YAW_FREQ = 0.3     # Hz
 
