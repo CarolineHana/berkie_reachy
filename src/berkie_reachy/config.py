@@ -111,14 +111,34 @@ _skip_dotenv = _env_flag("REACHY_MINI_SKIP_DOTENV", default=False)
 if _skip_dotenv:
     logger.info("Skipping .env loading because REACHY_MINI_SKIP_DOTENV is set")
 else:
-    # Locate .env file — search from cwd first, then fall back to package root
+    # Locate .env file — search from cwd first, then fall back to well-known
+    # candidates. The app subprocess's actual OS-level cwd (wherever the
+    # daemon that launched it happens to run from) is unrelated to where the
+    # package itself lives, so find_dotenv(usecwd=True) reliably finds
+    # nothing for the real installed app - confirmed empirically, it logs
+    # "No .env file found" every time. Two real layouts need covering:
+    #  - a real (non-editable) install: config.py sits directly at
+    #    <site-packages>/berkie_reachy/config.py, and this is also exactly
+    #    ``instance_path`` (main.py's own directory) - the same .env
+    #    llm_engine_bootstrap's _persist_config()/_read_persisted_config()
+    #    already read/write Bedrock/OpenAI/Tavily credentials to. General
+    #    config vars (e.g. BERKY_DIARIZATION_ENABLED) have no such explicit
+    #    side-channel, so they silently stayed at their class defaults here
+    #    until this fallback existed - found the hard way debugging why
+    #    diarization never actually enabled despite the .env clearly having
+    #    it set.
+    #  - an editable dev checkout: config.py sits at <repo>/src/berkie_reachy/
+    #    config.py, so the repo root (three dirname() calls up) is where a
+    #    developer's own .env normally lives.
     dotenv_path = find_dotenv(usecwd=True)
     if not dotenv_path:
         import os as _os
-        _pkg_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-        _candidate = _os.path.join(_pkg_root, ".env")
-        if _os.path.isfile(_candidate):
-            dotenv_path = _candidate
+        _pkg_dir = _os.path.dirname(_os.path.abspath(__file__))
+        _repo_root = _os.path.dirname(_os.path.dirname(_pkg_dir))
+        for _candidate in (_os.path.join(_pkg_dir, ".env"), _os.path.join(_repo_root, ".env")):
+            if _os.path.isfile(_candidate):
+                dotenv_path = _candidate
+                break
 
     if dotenv_path:
         # Load .env and override environment variables
