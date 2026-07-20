@@ -289,14 +289,14 @@ class MovementManager:
         # motion regardless of tick jitter.
         self._listening_yaw_sway_smoothed = 0.0
         self._listening_antenna_sway_smoothed = 0.0
-        self._max_listening_sway_rate = math.radians(20)
+        self._max_listening_sway_rate = math.radians(12)
         self._face_tracking_mute = 0.0  # 0 = full tracking, 1 = fully muted (listening)
         self._face_tracking_mute_duration = 0.3  # seconds to fade tracking in/out
         self._last_face_mute_time = self._now()
         self._face_tracking_rotation_smoothed = (0.0, 0.0, 0.0)  # roll, pitch, yaw - rate limited
         self._max_face_tracking_rotation_rate = math.radians(8)  # cap: slow, deliberate turn toward a tracked face
         self._last_face_tracking_tick = self._now()
-        self._listening_debounce_s = 0.15
+        self._listening_debounce_s = 0.5
         self._last_listening_toggle_time = self._now()
         self._last_set_target_err = 0.0
         self._set_target_err_interval = 1.0  # seconds between error logs
@@ -653,7 +653,7 @@ class MovementManager:
             # Rate-limited the same way as the body-yaw sweep - see its
             # comment for why (irregular tick timing under CPU load).
             dt_sway = max(0.0, now - last_update)
-            target_sway = math.radians(10) * math.sin(2 * math.pi * 0.08 * self._t_listening)
+            target_sway = math.radians(16) * math.sin(2 * math.pi * 0.08 * self._t_listening)
             max_step = self._max_listening_sway_rate * dt_sway
             delta = max(-max_step, min(max_step, target_sway - self._listening_antenna_sway_smoothed))
             self._listening_antenna_sway_smoothed += delta
@@ -934,7 +934,7 @@ class MovementManager:
 
             target_yaw_sway = 0.0
             if self._is_listening:
-                target_yaw_sway = math.radians(10) * math.sin(2 * math.pi * 0.08 * self._t_listening)
+                target_yaw_sway = math.radians(16) * math.sin(2 * math.pi * 0.08 * self._t_listening)
             max_step = self._max_listening_sway_rate * dt_tick
             delta = max(-max_step, min(max_step, target_yaw_sway - self._listening_yaw_sway_smoothed))
             self._listening_yaw_sway_smoothed += delta
