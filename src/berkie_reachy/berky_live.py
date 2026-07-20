@@ -9,6 +9,7 @@ robot's own speaker.
 
 from __future__ import annotations
 
+import math
 import base64
 import asyncio
 import logging
@@ -41,6 +42,7 @@ class BerkyLiveHandler(AsyncStreamHandler):
         self._movement_manager = movement_manager
         self._head_wobbler = head_wobbler
         self._speaking = False
+        self._listening_scan_task: Optional[asyncio.Task] = None
 
     def copy(self) -> "BerkyLiveHandler":
         """Create a fresh handler for a new stream session."""
@@ -53,6 +55,54 @@ class BerkyLiveHandler(AsyncStreamHandler):
         await self.client.connect()
         self._connected = True
         logger.info("Berky live handler connected to LLM Engine")
+
+    async def _listening_scan_loop(self) -> None:
+        """Slowly rotate head left-right while the user is speaking.
+
+        Deliberately simple and self-contained: a smooth, continuously-
+        running sine wave driving set_speech_offsets directly, restored from
+        an earlier version of this behavior after a more elaborate redesign
+        (sinusoidal body-yaw + antenna sway integrated into MovementManager's
+        100Hz control loop, gated on the same is_listening signal) turned out
+        fragile - repeated listening restarts (common: VAD-based is_active
+        toggles per utterance) caused compounding drift/twitch despite
+        several rounds of targeted fixes. This approach only ever runs one
+        task at a time (start is a no-op while already running) and only
+        touches head yaw via the same offset mechanism the speaking-nod
+        already uses, so it can't drift or fight with anything else in
+        MovementManager's freeze/blend machinery.
+        """
+        YAW_AMP = math.radians(10)
+        YAW_FREQ = 0.2
+        ZERO = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        dt = 0.05
+        t = 0.0
+        try:
+            while True:
+                yaw = YAW_AMP * math.sin(2 * math.pi * YAW_FREQ * t)
+                try:
+                    self._movement_manager.set_speech_offsets((0.0, 0.0, 0.0, 0.0, 0.0, yaw))
+                except Exception:
+                    pass
+                t += dt
+                await asyncio.sleep(dt)
+        except asyncio.CancelledError:
+            try:
+                self._movement_manager.set_speech_offsets(ZERO)
+            except Exception:
+                pass
+
+    def _start_listening_scan(self) -> None:
+        if self._movement_manager is None:
+            return
+        if self._listening_scan_task and not self._listening_scan_task.done():
+            return
+        self._listening_scan_task = asyncio.create_task(self._listening_scan_loop(), name="listening-scan")
+
+    def _stop_listening_scan(self) -> None:
+        if self._listening_scan_task and not self._listening_scan_task.done():
+            self._listening_scan_task.cancel()
+        self._listening_scan_task = None
 
     def _feed_head_wobbler(self, samples: NDArray[np.int16], sample_rate: int) -> None:
         """Drive audio-cadence head movement from the synthesized speech itself.
@@ -88,6 +138,7 @@ class BerkyLiveHandler(AsyncStreamHandler):
 
         if synth is not None:
             sample_rate, samples = synth
+            self._stop_listening_scan()
             self._feed_head_wobbler(samples, sample_rate)
             # Mute the mic for the duration of playback - otherwise Berky's
             # own voice, played through the robot's speaker, bleeds back into
@@ -126,6 +177,10 @@ class BerkyLiveHandler(AsyncStreamHandler):
         is_active = self.transcriber.is_active
         if self._movement_manager is not None:
             self._movement_manager.set_listening(is_active)
+        if is_active:
+            self._start_listening_scan()
+        else:
+            self._stop_listening_scan()
 
         if not transcript:
             return
@@ -143,6 +198,7 @@ class BerkyLiveHandler(AsyncStreamHandler):
 
     async def shutdown(self) -> None:
         """Disconnect from LLM Engine and clear pending output."""
+        self._stop_listening_scan()
         try:
             await self.client.disconnect()
         finally:

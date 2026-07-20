@@ -277,26 +277,13 @@ class MovementManager:
         self._antenna_blend_duration = 0.4  # seconds to blend back after listening
         self._last_listening_blend_time = self._now()
         self._breathing_active = False  # true when breathing move is running or queued
-        self._t_listening: float = 0.0  # monotonic time accumulator for listening motion
-        self._last_listen_tick: float = self._now()
-        # Rate-limit the listening sweep itself (body-yaw + ear sway), same
-        # pattern as face tracking below - the sine target is smooth, but
-        # commanding it directly snaps to whatever the target is *this tick*,
-        # which visibly jumps if the 100Hz control loop's actual tick timing
-        # goes irregular (e.g. under CPU load from Whisper/diarization
-        # running on the same machine) rather than advancing in small,
-        # even steps. Rate-limiting the commanded value guarantees smooth
-        # motion regardless of tick jitter.
-        self._listening_yaw_sway_smoothed = 0.0
-        self._listening_antenna_sway_smoothed = 0.0
-        self._max_listening_sway_rate = math.radians(12)
         self._face_tracking_mute = 0.0  # 0 = full tracking, 1 = fully muted (listening)
         self._face_tracking_mute_duration = 0.3  # seconds to fade tracking in/out
         self._last_face_mute_time = self._now()
         self._face_tracking_rotation_smoothed = (0.0, 0.0, 0.0)  # roll, pitch, yaw - rate limited
         self._max_face_tracking_rotation_rate = math.radians(8)  # cap: slow, deliberate turn toward a tracked face
         self._last_face_tracking_tick = self._now()
-        self._listening_debounce_s = 0.5
+        self._listening_debounce_s = 0.15
         self._last_listening_toggle_time = self._now()
         self._last_set_target_err = 0.0
         self._set_target_err_interval = 1.0  # seconds between error logs
@@ -477,24 +464,14 @@ class MovementManager:
             self._is_listening = desired_state
             self._last_listening_blend_time = now
             if desired_state:
-                # Freeze around the *pre-sway* antenna position, not
-                # whatever's currently commanded (which includes the sway
-                # offset from the previous listening session). Baking the
-                # sway into the new anchor point, while the sway itself also
-                # keeps running continuously (never reset - see the 100Hz
-                # loop), compounded on every listening restart: each
-                # start/stop cycle added the prior sway offset again on top,
-                # producing a drifting/jumping anchor rather than a fixed
-                # center to sweep around - the actual source of the visible
-                # "little bursts", not just tick-timing jitter.
-                prev_sway = self._listening_antenna_sway_smoothed
+                # Freeze: snapshot current commanded antennas and reset blend
                 self._listening_antennas = (
-                    float(self._last_commanded_pose[1][0]) - prev_sway,
-                    float(self._last_commanded_pose[1][1]) + prev_sway,
+                    float(self._last_commanded_pose[1][0]),
+                    float(self._last_commanded_pose[1][1]),
                 )
                 self._antenna_unfreeze_blend = 0.0
                 # Stop any active move (breathing, sweep_look, dance, etc.) so the
-                # robot goes still - only body-yaw sway/ear sway animate from here
+                # robot goes still while listening
                 if self.state.current_move is not None:
                     self.state.current_move = None
                     self.state.move_start_time = None
@@ -647,18 +624,18 @@ class MovementManager:
         self._last_listening_blend_time = now
 
         if listening:
-            # Ear sway synced to the same slow phase clock as the body-yaw
-            # sweep (see the 100Hz loop) rather than its own faster rate -
-            # two independent oscillation speeds at once read as twitchy.
-            # Rate-limited the same way as the body-yaw sweep - see its
-            # comment for why (irregular tick timing under CPU load).
-            dt_sway = max(0.0, now - last_update)
-            target_sway = math.radians(16) * math.sin(2 * math.pi * 0.08 * self._t_listening)
-            max_step = self._max_listening_sway_rate * dt_sway
-            delta = max(-max_step, min(max_step, target_sway - self._listening_antenna_sway_smoothed))
-            self._listening_antenna_sway_smoothed += delta
-            sway = self._listening_antenna_sway_smoothed
-            antennas_cmd = (listening_antennas[0] + sway, listening_antennas[1] - sway)
+            # Simply freeze antennas at whatever position they were in when
+            # listening started - no oscillation. The "looking around while
+            # listening" cue comes entirely from BerkyLiveHandler's separate
+            # head-yaw scan (a self-contained asyncio task driving
+            # set_speech_offsets), not from anything here. An earlier
+            # redesign added body-yaw/antenna sway directly into this
+            # control loop instead, which turned out fragile - freezing and
+            # re-anchoring on every listening restart (common: VAD-based
+            # is_active toggles per utterance) compounded into drift/twitch
+            # despite several rounds of fixes. Reverting to this simpler,
+            # previously-solid approach rather than continuing to patch it.
+            antennas_cmd = listening_antennas
             new_blend = 0.0
         else:
             dt = max(0.0, now - last_update)
@@ -918,29 +895,7 @@ class MovementManager:
             # 4) Build primary and secondary full-body poses, then fuse them
             head, antennas, body_yaw = self._compose_full_body_pose(loop_start)
 
-            # 4b) Accumulate listening timer and add body-yaw rotation while listening
-            #
-            # The sweep's phase clock (_t_listening) always keeps running,
-            # even while not listening - only whether it's *added* to
-            # body_yaw is gated on _is_listening. Resetting the phase to 0
-            # whenever listening briefly flickered off (VAD-based
-            # is_listening toggles on natural micro-pauses in speech, faster
-            # than a user perceives "listening" as having stopped) snapped
-            # the sweep back to center every time, which read as twitchy
-            # rather than a continuous slow sweep.
-            dt_tick = loop_start - self._last_listen_tick
-            self._last_listen_tick = loop_start
-            self._t_listening += dt_tick
-
-            target_yaw_sway = 0.0
-            if self._is_listening:
-                target_yaw_sway = math.radians(16) * math.sin(2 * math.pi * 0.08 * self._t_listening)
-            max_step = self._max_listening_sway_rate * dt_tick
-            delta = max(-max_step, min(max_step, target_yaw_sway - self._listening_yaw_sway_smoothed))
-            self._listening_yaw_sway_smoothed += delta
-            body_yaw += self._listening_yaw_sway_smoothed
-
-            # 5) Apply listening antenna sway or blend-back
+            # 5) Apply listening antenna freeze or blend-back
             antennas_cmd = self._calculate_blended_antennas(antennas)
 
             # 6) Single set_target call - the only control point
