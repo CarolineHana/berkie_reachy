@@ -40,6 +40,7 @@ class BerkyLiveHandler(AsyncStreamHandler):
         self._connected = False
         self._movement_manager = movement_manager
         self._head_wobbler = head_wobbler
+        self._speaking = False
 
     def copy(self) -> "BerkyLiveHandler":
         """Create a fresh handler for a new stream session."""
@@ -88,10 +89,22 @@ class BerkyLiveHandler(AsyncStreamHandler):
         if synth is not None:
             sample_rate, samples = synth
             self._feed_head_wobbler(samples, sample_rate)
-            await self.output_queue.put(synth)
-            await asyncio.sleep(len(samples) / sample_rate)
-            if self._movement_manager is not None:
-                self._movement_manager.set_speech_offsets((0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+            # Mute the mic for the duration of playback - otherwise Berky's
+            # own voice, played through the robot's speaker, bleeds back into
+            # its mic and gets transcribed as if it were something the user
+            # said (observed live: repeated "Thank you." transcripts arriving
+            # while a response was still being spoken). Flush any
+            # in-progress buffer first so a partial segment doesn't carry
+            # across the mute boundary.
+            self.transcriber.flush()
+            self._speaking = True
+            try:
+                await self.output_queue.put(synth)
+                await asyncio.sleep(len(samples) / sample_rate)
+            finally:
+                self._speaking = False
+                if self._movement_manager is not None:
+                    self._movement_manager.set_speech_offsets((0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
         else:
             # No file-capable TTS binary found; fall back to direct playback
             # on this machine so the response is at least audible somewhere.
@@ -102,6 +115,9 @@ class BerkyLiveHandler(AsyncStreamHandler):
     async def receive(self, frame: Tuple[int, NDArray[Any]]) -> None:
         """Accept browser microphone frames and send completed transcripts."""
         if not self._connected:
+            return
+        if self._speaking:
+            # Mic muted while Berky is talking - see _on_agent_message.
             return
 
         sample_rate, audio = frame
