@@ -177,7 +177,12 @@ class BerkyLiveHandler(AsyncStreamHandler):
         logger.info("Browser transcript: %s", transcript)
         await self.output_queue.put(AdditionalOutputs({"role": "user", "content": transcript}))
         try:
-            await self.client.send_transcript(transcript, final=True)
+            # last_speaker comes from diarization (see LocalWhisperSegmenter),
+            # if enabled - previously never passed through here at all, so
+            # the diarized label was computed and then silently discarded;
+            # llm_engine never saw it and couldn't use it for speaker-count
+            # questions.
+            await self.client.send_transcript(transcript, final=True, speaker=self.transcriber.last_speaker)
         except Exception:
             logger.warning("Failed to send transcript — LLM Engine disconnected, will retry on reconnect")
 

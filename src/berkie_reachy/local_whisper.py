@@ -151,7 +151,20 @@ class LocalWhisperSegmenter:
 
         plain_text = " ".join(seg.text.strip() for seg in segments if seg.text.strip())
 
-        if self._diarizer is not None:
+        # Diarization on very short clips is unreliable - pyannote's speaker
+        # embeddings need a reasonable amount of clean speech to form a
+        # stable voice fingerprint; on sub-~1.5s segments they're noisy
+        # enough to split one continuous speaker into several spurious
+        # "SPEAKER_XX" labels (confirmed live: one person got diarized as
+        # 3-4 distinct speakers). Skipping diarization below this floor
+        # means short utterances just don't get a speaker label rather than
+        # a confidently wrong one - especially important now that the label
+        # actually reaches the LLM's prompt (see llm_engine's
+        # formatTranscriptMessage) instead of being silently discarded.
+        _MIN_DIARIZATION_SECONDS = 1.5
+        long_enough_for_diarization = len(audio) >= _MIN_DIARIZATION_SECONDS * TARGET_SAMPLE_RATE
+
+        if self._diarizer is not None and long_enough_for_diarization:
             try:
                 aligned = self._diarizer.align_with_asr(segments, audio, TARGET_SAMPLE_RATE)
                 if aligned:
