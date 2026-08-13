@@ -17,6 +17,10 @@ logger = logging.getLogger(__name__)
 
 TARGET_SAMPLE_RATE = 16000
 
+# WebRTC VAD only accepts 16-bit mono PCM frames of exactly 10, 20, or 30ms.
+_VAD_FRAME_MS = 30
+_VAD_FRAME_SAMPLES = TARGET_SAMPLE_RATE * _VAD_FRAME_MS // 1000
+
 
 def _mono_float32(frame: NDArray[Any]) -> NDArray[np.float32]:
     audio = np.asarray(frame)
@@ -52,12 +56,20 @@ class LocalWhisperSegmenter:
                 "`pip install -e .[berky_voice]`."
             ) from exc
 
+        try:
+            import webrtcvad
+        except ImportError as exc:
+            raise RuntimeError(
+                "Install the berky_voice extra or webrtcvad-wheels to use local transcription: "
+                "`pip install -e .[berky_voice]`."
+            ) from exc
+
         self.model = WhisperModel(
             config.BERKY_WHISPER_MODEL,
             device=config.BERKY_WHISPER_DEVICE,
             compute_type=config.BERKY_WHISPER_COMPUTE_TYPE,
         )
-        self.threshold = float(config.BERKY_SPEECH_RMS_THRESHOLD)
+        self.vad = webrtcvad.Vad(int(config.BERKY_VAD_AGGRESSIVENESS))
         self.silence_samples_required = int(float(config.BERKY_SILENCE_SECONDS) * TARGET_SAMPLE_RATE)
         self.max_samples = int(float(config.BERKY_TRANSCRIBE_WINDOW_SECONDS) * TARGET_SAMPLE_RATE)
         self.min_samples = int(0.45 * TARGET_SAMPLE_RATE)
@@ -66,6 +78,10 @@ class LocalWhisperSegmenter:
         self._active = False
         self._speech_samples = 0
         self._silence_samples = 0
+        # Leftover samples that don't yet fill a full VAD frame; carried over
+        # between accept() calls since incoming mic frames aren't guaranteed
+        # to align to the VAD's fixed 10/20/30ms frame size.
+        self._pending = np.empty(0, dtype=np.float32)
 
         self.last_speaker: str | None = None
         self._diarizer = None
@@ -86,8 +102,30 @@ class LocalWhisperSegmenter:
         if len(audio) == 0:
             return None
 
-        rms = float(np.sqrt(np.mean(np.square(audio))))
-        is_speech = rms >= self.threshold
+        if self._pending.size:
+            audio = np.concatenate([self._pending, audio])
+
+        usable_frames = len(audio) // _VAD_FRAME_SAMPLES
+        boundary = usable_frames * _VAD_FRAME_SAMPLES
+        self._pending = audio[boundary:]
+
+        segment: NDArray[np.float32] | None = None
+        for i in range(usable_frames):
+            chunk = audio[i * _VAD_FRAME_SAMPLES : (i + 1) * _VAD_FRAME_SAMPLES]
+            result = self._process_vad_frame(chunk)
+            if result is not None:
+                segment = result
+
+        if segment is None:
+            return None
+        return await asyncio.to_thread(self._transcribe, segment)
+
+    def _process_vad_frame(self, chunk: NDArray[np.float32]) -> NDArray[np.float32] | None:
+        """Advance the segmenter state machine by one fixed-size VAD frame.
+
+        Returns a finalized audio segment once an utterance boundary is detected.
+        """
+        is_speech = self._is_speech(chunk)
 
         if is_speech:
             self._active = True
@@ -96,12 +134,12 @@ class LocalWhisperSegmenter:
         if not self._active:
             return None
 
-        self._buffer.append(audio)
-        self._speech_samples += len(audio)
+        self._buffer.append(chunk)
+        self._speech_samples += len(chunk)
         if is_speech:
             self._silence_samples = 0
         else:
-            self._silence_samples += len(audio)
+            self._silence_samples += len(chunk)
 
         long_enough = self._speech_samples >= self.min_samples
         silence_done = self._silence_samples >= self.silence_samples_required
@@ -109,10 +147,11 @@ class LocalWhisperSegmenter:
         if not ((long_enough and silence_done) or maxed):
             return None
 
-        segment = self._consume_buffer()
-        if segment is None:
-            return None
-        return await asyncio.to_thread(self._transcribe, segment)
+        return self._consume_buffer()
+
+    def _is_speech(self, chunk: NDArray[np.float32]) -> bool:
+        pcm16 = np.clip(chunk * 32768.0, -32768, 32767).astype(np.int16).tobytes()
+        return bool(self.vad.is_speech(pcm16, TARGET_SAMPLE_RATE))
 
     def flush(self) -> NDArray[np.float32] | None:
         """Return pending audio, if any, and reset state."""

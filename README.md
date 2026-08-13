@@ -60,7 +60,8 @@ Optional settings:
 
 - `BERKY_TRANSCRIPT_CHANNEL_PASSCODE`: passcode for a protected transcript channel.
 - `BERKY_WHISPER_MODEL`: local faster-whisper model, default `base.en`.
-- `BERKY_SPEECH_RMS_THRESHOLD`, `BERKY_SILENCE_SECONDS`, `BERKY_TRANSCRIBE_WINDOW_SECONDS`: audio segmentation tuning.
+- `BERKY_VAD_AGGRESSIVENESS`, `BERKY_SILENCE_SECONDS`, `BERKY_TRANSCRIBE_WINDOW_SECONDS`: audio segmentation tuning.
+- `BERKY_WHISPER_COMPUTE_TYPE`: faster-whisper ctranslate2 compute type, default `int8`.
 - `BERKY_TTS_COMMAND`: local TTS command. Use `{text}` as the utterance placeholder.
 
 Run the Reachy-side runtime with:

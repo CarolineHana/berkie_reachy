@@ -46,6 +46,18 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_int(name: str, default: int) -> int:
+    """Parse an integer environment value."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Invalid int value for %s=%r, using default=%s", name, raw, default)
+        return default
+
+
 def _env_list(name: str, default: list[str]) -> list[str]:
     """Parse a comma-separated environment list."""
     raw = os.getenv(name)
@@ -181,10 +193,17 @@ class Config:
     # loosened fuzzy-match threshold and silently drop the wake attempt.
     BERKY_WHISPER_MODEL = os.getenv("BERKY_WHISPER_MODEL", "small.en")
     BERKY_WHISPER_DEVICE = os.getenv("BERKY_WHISPER_DEVICE", "auto")
-    BERKY_WHISPER_COMPUTE_TYPE = os.getenv("BERKY_WHISPER_COMPUTE_TYPE", "default")
+    # int8 quantization gives a meaningful speedup over ctranslate2's "default"
+    # compute type (full precision) on both CPU and CUDA, at a small accuracy
+    # cost - worth it here since Whisper transcription is a hard blocking step
+    # in the STT->LLM->TTS chain (nothing else can start until it finishes).
+    BERKY_WHISPER_COMPUTE_TYPE = os.getenv("BERKY_WHISPER_COMPUTE_TYPE", "int8")
     BERKY_TRANSCRIBE_WINDOW_SECONDS = _env_float("BERKY_TRANSCRIBE_WINDOW_SECONDS", 6.0)
     BERKY_SILENCE_SECONDS = _env_float("BERKY_SILENCE_SECONDS", 0.8)
-    BERKY_SPEECH_RMS_THRESHOLD = _env_float("BERKY_SPEECH_RMS_THRESHOLD", 0.012)
+    # WebRTC VAD aggressiveness: 0 (least aggressive about filtering out
+    # non-speech) to 3 (most aggressive). Higher values end silence segments
+    # faster but risk clipping soft speech.
+    BERKY_VAD_AGGRESSIVENESS = _env_int("BERKY_VAD_AGGRESSIVENESS", 2)
     BERKY_TTS_COMMAND = os.getenv("BERKY_TTS_COMMAND")
     HF_HOME = os.getenv("HF_HOME", "./cache")
     LOCAL_VISION_MODEL = os.getenv("LOCAL_VISION_MODEL", "HuggingFaceTB/SmolVLM2-2.2B-Instruct")
