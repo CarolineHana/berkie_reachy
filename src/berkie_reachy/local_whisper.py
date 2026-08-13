@@ -52,16 +52,14 @@ class LocalWhisperSegmenter:
             from faster_whisper import WhisperModel
         except ImportError as exc:
             raise RuntimeError(
-                "Install the berky_voice extra or faster-whisper to use local transcription: "
-                "`pip install -e .[berky_voice]`."
+                "faster-whisper is required for local transcription: `pip install faster-whisper`."
             ) from exc
 
         try:
             import webrtcvad
         except ImportError as exc:
             raise RuntimeError(
-                "Install the berky_voice extra or webrtcvad-wheels to use local transcription: "
-                "`pip install -e .[berky_voice]`."
+                "webrtcvad-wheels is required for local transcription: `pip install webrtcvad-wheels`."
             ) from exc
 
         self.model = WhisperModel(

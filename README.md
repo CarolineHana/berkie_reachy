@@ -67,7 +67,7 @@ Optional settings:
 Run the Reachy-side runtime with:
 
 ```bash
-pip install -e ".[berky_voice]"
+pip install -e .
 berky-reachy
 ```
 

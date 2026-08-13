@@ -8,7 +8,7 @@ version = "0.3.0"
 description = ""
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = [ "aiortc>=1.13.0", "fastrtc>=0.0.34", "gradio==5.50.1.dev1", "huggingface-hub==1.3.0", "httpx>=0.28.0", "opencv-python>=4.12.0.88", "python-dotenv", "openai>=2.1", "python-socketio[client]>=5.11.0", "reachy_mini_dances_library", "reachy_mini_toolbox", "reachy-mini>=1.5.0", "eclipse-zenoh~=1.7.0", "gradio_client>=1.13.3",]
+dependencies = [ "aiortc>=1.13.0", "fastrtc>=0.0.34", "gradio==5.50.1.dev1", "huggingface-hub==1.3.0", "httpx>=0.28.0", "opencv-python>=4.12.0.88", "python-dotenv", "openai>=2.1", "python-socketio[client]>=5.11.0", "reachy_mini_dances_library", "reachy_mini_toolbox", "reachy-mini>=1.5.0", "eclipse-zenoh~=1.7.0", "gradio_client>=1.13.3", "faster-whisper>=1.1.0", "webrtcvad-wheels>=2.0.10",]
 [[project.authors]]
 name = "Pollen Robotics"
 email = "contact@pollen-robotics.com"
@@ -21,7 +21,6 @@ local_vision = [ "torch>=2.1", "transformers==5.0.0rc2", "num2words",]
 yolo_vision = [ "ultralytics", "supervision",]
 mediapipe_vision = [ "mediapipe==0.10.14",]
 all_vision = [ "torch>=2.1", "transformers==5.0.0rc2", "num2words", "ultralytics", "supervision", "mediapipe==0.10.14",]
-berky_voice = [ "faster-whisper>=1.1.0", "webrtcvad-wheels>=2.0.10",]
 
 [project.scripts]
 berkie-reachy = "berkie_reachy.main:main"
