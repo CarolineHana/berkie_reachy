@@ -270,36 +270,11 @@ class MovementManager:
 
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
-        self._is_listening = False
         self._last_commanded_pose: FullBodyPose = clone_full_body_pose(self.state.last_primary_pose)
-        self._listening_antennas: Tuple[float, float] = self._last_commanded_pose[1]
-        self._antenna_unfreeze_blend = 1.0
-        self._antenna_blend_duration = 0.4  # seconds to blend back after listening
-        self._last_listening_blend_time = self._now()
         self._breathing_active = False  # true when breathing move is running or queued
-        # Body-yaw sweep while listening. Phase clock always keeps running,
-        # even while not listening - only whether it's *added* to body_yaw is
-        # gated on _is_listening - so brief listening flicker (VAD-based,
-        # toggles on natural speech micro-pauses) never snaps the sweep back
-        # to center. Commanded value is rate-limited rather than jumping
-        # straight to the sine target each tick, so irregular control-loop
-        # timing (e.g. under CPU load from Whisper/diarization) can't cause a
-        # visible jump either. Deliberately doesn't touch antennas - an
-        # earlier version added antenna sway here too, anchored to a snapshot
-        # re-captured on every listening restart, which compounded into
-        # drift; antennas are left as a plain freeze (see set_listening).
-        self._t_listening: float = 0.0
-        self._last_listen_tick: float = self._now()
-        self._listening_yaw_sway_smoothed = 0.0
-        self._max_listening_sway_rate = math.radians(18)
-        self._face_tracking_mute = 0.0  # 0 = full tracking, 1 = fully muted (listening)
-        self._face_tracking_mute_duration = 0.3  # seconds to fade tracking in/out
-        self._last_face_mute_time = self._now()
         self._face_tracking_rotation_smoothed = (0.0, 0.0, 0.0)  # roll, pitch, yaw - rate limited
         self._max_face_tracking_rotation_rate = math.radians(8)  # cap: slow, deliberate turn toward a tracked face
         self._last_face_tracking_tick = self._now()
-        self._listening_debounce_s = 0.15
-        self._last_listening_toggle_time = self._now()
         self._last_set_target_err = 0.0
         self._set_target_err_interval = 1.0  # seconds between error logs
         self._set_target_err_suppressed = 0
@@ -330,8 +305,6 @@ class MovementManager:
 
         self._shared_state_lock = threading.Lock()
         self._shared_last_activity_time = self.state.last_activity_time
-        self._shared_is_listening = self._is_listening
-        self._shared_listening_yaw_sway = 0.0
         self._status_lock = threading.Lock()
         self._freq_stats = LoopFrequencyStats()
         self._freq_snapshot = LoopFrequencyStats()
@@ -373,27 +346,8 @@ class MovementManager:
         """Return True when the robot has been inactive longer than the idle delay."""
         with self._shared_state_lock:
             last_activity = self._shared_last_activity_time
-            listening = self._shared_is_listening
-
-        if listening:
-            return False
 
         return self._now() - last_activity >= self.idle_inactivity_delay
-
-    def set_listening(self, listening: bool) -> None:
-        """Enable or disable listening mode without touching shared state directly.
-
-        While listening:
-        - Antenna positions are frozen at the last commanded values.
-        - Blending is reset so that upon unfreezing the antennas return smoothly.
-        - Idle breathing is suppressed.
-
-        Thread-safe: the change is posted to the worker command queue.
-        """
-        with self._shared_state_lock:
-            if self._shared_is_listening == listening:
-                return
-        self._command_queue.put(("set_listening", listening))
 
     def _poll_signals(self, current_time: float) -> None:
         """Apply queued commands and pending offset updates."""
@@ -464,39 +418,6 @@ class MovementManager:
             self.state.update_activity()
         elif command == "mark_activity":
             self.state.update_activity()
-        elif command == "set_listening":
-            desired_state = bool(payload)
-            now = self._now()
-            if self._is_listening == desired_state:
-                # Not a real transition - don't touch the debounce timer here,
-                # or a burst of same-state calls (this fires on every audio
-                # frame) keeps refreshing it and can delay/deny the next
-                # genuine transition.
-                return
-            if now - self._last_listening_toggle_time < self._listening_debounce_s:
-                return
-            self._last_listening_toggle_time = now
-
-            self._is_listening = desired_state
-            self._last_listening_blend_time = now
-            if desired_state:
-                # Freeze: snapshot current commanded antennas and reset blend
-                self._listening_antennas = (
-                    float(self._last_commanded_pose[1][0]),
-                    float(self._last_commanded_pose[1][1]),
-                )
-                self._antenna_unfreeze_blend = 0.0
-                # Stop any active move (breathing, sweep_look, dance, etc.) so the
-                # robot goes still while listening
-                if self.state.current_move is not None:
-                    self.state.current_move = None
-                    self.state.move_start_time = None
-                    self._breathing_active = False
-                self.move_queue.clear()
-            else:
-                # Unfreeze: restart blending from frozen pose
-                self._antenna_unfreeze_blend = 0.0
-            self.state.update_activity()
         else:
             logger.warning("Unknown command received by MovementManager: %s", command)
 
@@ -504,13 +425,6 @@ class MovementManager:
         """Expose idle-related state for external threads."""
         with self._shared_state_lock:
             self._shared_last_activity_time = self.state.last_activity_time
-            self._shared_is_listening = self._is_listening
-            self._shared_listening_yaw_sway = self._listening_yaw_sway_smoothed
-
-    def get_listening_yaw_sway(self) -> float:
-        """Current body-yaw listening sway, in radians - so callers (e.g. the head-yaw scan) can move in sync with it."""
-        with self._shared_state_lock:
-            return self._shared_listening_yaw_sway
 
     def _manage_move_queue(self, current_time: float) -> None:
         """Manage the primary move queue (sequential execution)."""
@@ -533,7 +447,6 @@ class MovementManager:
         if (
             self.state.current_move is None
             and not self.move_queue
-            and not self._is_listening
             and not self._breathing_active
         ):
             idle_for = current_time - self.state.last_activity_time
@@ -635,53 +548,6 @@ class MovementManager:
         self._manage_move_queue(current_time)
         self._manage_breathing(current_time)
 
-    def _calculate_blended_antennas(self, target_antennas: Tuple[float, float]) -> Tuple[float, float]:
-        """Blend target antennas with listening freeze state and update blending."""
-        now = self._now()
-        listening = self._is_listening
-        listening_antennas = self._listening_antennas
-        blend = self._antenna_unfreeze_blend
-        blend_duration = self._antenna_blend_duration
-        last_update = self._last_listening_blend_time
-        self._last_listening_blend_time = now
-
-        if listening:
-            # Simply freeze antennas at whatever position they were in when
-            # listening started - no oscillation. The "looking around while
-            # listening" cue comes entirely from BerkyLiveHandler's separate
-            # head-yaw scan (a self-contained asyncio task driving
-            # set_speech_offsets), not from anything here. An earlier
-            # redesign added body-yaw/antenna sway directly into this
-            # control loop instead, which turned out fragile - freezing and
-            # re-anchoring on every listening restart (common: VAD-based
-            # is_active toggles per utterance) compounded into drift/twitch
-            # despite several rounds of fixes. Reverting to this simpler,
-            # previously-solid approach rather than continuing to patch it.
-            antennas_cmd = listening_antennas
-            new_blend = 0.0
-        else:
-            dt = max(0.0, now - last_update)
-            if blend_duration <= 0:
-                new_blend = 1.0
-            else:
-                new_blend = min(1.0, blend + dt / blend_duration)
-            antennas_cmd = (
-                listening_antennas[0] * (1.0 - new_blend) + target_antennas[0] * new_blend,
-                listening_antennas[1] * (1.0 - new_blend) + target_antennas[1] * new_blend,
-            )
-
-        if listening:
-            self._antenna_unfreeze_blend = 0.0
-        else:
-            self._antenna_unfreeze_blend = new_blend
-            if new_blend >= 1.0:
-                self._listening_antennas = (
-                    float(target_antennas[0]),
-                    float(target_antennas[1]),
-                )
-
-        return antennas_cmd
-
     def _issue_control_command(self, head: NDArray[np.float32], antennas: Tuple[float, float], body_yaw: float) -> None:
         """Send the fused pose to the robot with throttled error logging."""
         try:
@@ -753,34 +619,18 @@ class MovementManager:
         stats.reset()
 
     def _update_face_tracking(self, current_time: float) -> None:
-        """Get face tracking offsets from camera worker thread, faded out while listening."""
+        """Get face tracking offsets from the camera worker thread."""
         if self.camera_worker is not None:
             raw_offsets = self.camera_worker.get_face_tracking_offsets()
         else:
             raw_offsets = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-
-        # Keep the head still while listening (body-yaw and ear sway carry the animation
-        # instead); fade the mute in/out so re-engaging tracking doesn't snap the head.
-        dt = max(0.0, current_time - self._last_face_mute_time)
-        self._last_face_mute_time = current_time
-        target_mute = 1.0 if self._is_listening else 0.0
-        if self._face_tracking_mute_duration <= 0:
-            self._face_tracking_mute = target_mute
-        else:
-            step = dt / self._face_tracking_mute_duration
-            if self._face_tracking_mute < target_mute:
-                self._face_tracking_mute = min(target_mute, self._face_tracking_mute + step)
-            else:
-                self._face_tracking_mute = max(target_mute, self._face_tracking_mute - step)
-
-        scale = 1.0 - self._face_tracking_mute
-        target_rotation = (raw_offsets[3] * scale, raw_offsets[4] * scale, raw_offsets[5] * scale)
 
         # Rate-limit the rotation (roll/pitch/yaw) so newly-acquired or fast-moving faces
         # are tracked with a smooth turn instead of an instant snap/twist.
         rate_dt = max(0.0, current_time - self._last_face_tracking_tick)
         self._last_face_tracking_tick = current_time
         max_step = self._max_face_tracking_rotation_rate * rate_dt
+        target_rotation = (raw_offsets[3], raw_offsets[4], raw_offsets[5])
         smoothed = []
         for current, target in zip(self._face_tracking_rotation_smoothed, target_rotation):
             delta = target - current
@@ -792,9 +642,9 @@ class MovementManager:
         self._face_tracking_rotation_smoothed = tuple(smoothed)
 
         self.state.face_tracking_offsets = (
-            raw_offsets[0] * scale,
-            raw_offsets[1] * scale,
-            raw_offsets[2] * scale,
+            raw_offsets[0],
+            raw_offsets[1],
+            raw_offsets[2],
             self._face_tracking_rotation_smoothed[0],
             self._face_tracking_rotation_smoothed[1],
             self._face_tracking_rotation_smoothed[2],
@@ -869,7 +719,6 @@ class MovementManager:
 
         return {
             "queue_size": len(self.move_queue),
-            "is_listening": self._is_listening,
             "breathing_active": self._breathing_active,
             "last_commanded_pose": {
                 "head": head_matrix,
@@ -917,33 +766,15 @@ class MovementManager:
             # 4) Build primary and secondary full-body poses, then fuse them
             head, antennas, body_yaw = self._compose_full_body_pose(loop_start)
 
-            # 4b) Sweep body-yaw left/right while listening (see __init__ for
-            # why the phase clock never resets and the commanded value is
-            # rate-limited).
-            dt_tick = loop_start - self._last_listen_tick
-            self._last_listen_tick = loop_start
-            self._t_listening += dt_tick
+            # 5) Single set_target call - the only control point
+            self._issue_control_command(head, antennas, body_yaw)
 
-            target_yaw_sway = 0.0
-            if self._is_listening:
-                target_yaw_sway = math.radians(28) * math.sin(2 * math.pi * 0.08 * self._t_listening)
-            max_step = self._max_listening_sway_rate * dt_tick
-            delta = max(-max_step, min(max_step, target_yaw_sway - self._listening_yaw_sway_smoothed))
-            self._listening_yaw_sway_smoothed += delta
-            body_yaw += self._listening_yaw_sway_smoothed
-
-            # 5) Apply listening antenna freeze or blend-back
-            antennas_cmd = self._calculate_blended_antennas(antennas)
-
-            # 6) Single set_target call - the only control point
-            self._issue_control_command(head, antennas_cmd, body_yaw)
-
-            # 7) Adaptive sleep to align to next tick, then publish shared state
+            # 6) Adaptive sleep to align to next tick, then publish shared state
             sleep_time, freq_stats = self._schedule_next_tick(loop_start, freq_stats)
             self._publish_shared_state()
             self._record_frequency_snapshot(freq_stats)
 
-            # 8) Periodic telemetry on loop frequency
+            # 7) Periodic telemetry on loop frequency
             self._maybe_log_frequency(loop_count, print_interval_loops, freq_stats)
 
             if sleep_time > 0:

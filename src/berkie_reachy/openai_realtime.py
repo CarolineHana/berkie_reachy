@@ -532,11 +532,9 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                             self._clear_queue()
                         if self.deps.head_wobbler is not None:
                             self.deps.head_wobbler.reset()
-                        self.deps.movement_manager.set_listening(True)
                         logger.debug("User speech started")
 
                     if event.type == "input_audio_buffer.speech_stopped":
-                        self.deps.movement_manager.set_listening(False)
                         logger.debug("User speech stopped - server will auto-commit with VAD")
 
                     if event.type in (

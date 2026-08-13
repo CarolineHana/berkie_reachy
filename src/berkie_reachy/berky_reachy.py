@@ -286,14 +286,6 @@ class BerkyReachyRuntime:
         except Exception as exc:
             logger.warning("Movement manager unavailable; continuing without expression motion: %s", exc)
 
-    def _set_listening(self, listening: bool) -> None:
-        if self._movement_manager is None:
-            return
-        try:
-            self._movement_manager.set_listening(listening)
-        except Exception:
-            logger.debug("Failed to update listening state", exc_info=True)
-
     async def run(self) -> None:
         """Run until interrupted."""
         self._start_motion()
@@ -314,7 +306,6 @@ class BerkyReachyRuntime:
                     continue
 
                 transcript = await self.transcriber.accept(input_sample_rate, frame)
-                self._set_listening(self.transcriber.is_active)
                 if transcript:
                     await self.client.send_transcript(transcript, final=True, speaker=self.transcriber.last_speaker)
 
