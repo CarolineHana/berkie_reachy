@@ -24,6 +24,10 @@ DEFAULT_AGENT_CONFIG = {
     "personality": "sarcastic-expert",
     "tools": ["web_search"],
     "recentTranscriptTurns": 20,
+    # Gives the assistant the eventHistorian's event_history tools, scoped to
+    # this conversation's own topic - lets Berkie search/reference its own
+    # past event transcripts (see eventQuestionHandler.ts's `series` gate).
+    "seriesHistory": True,
 }
 DEFAULT_LLM_PLATFORM = "bedrock"
 DEFAULT_LLM_MODEL = "us.anthropic.claude-opus-4-6-v1"
