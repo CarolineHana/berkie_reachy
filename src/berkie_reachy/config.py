@@ -199,7 +199,10 @@ class Config:
     # in the STT->LLM->TTS chain (nothing else can start until it finishes).
     BERKY_WHISPER_COMPUTE_TYPE = os.getenv("BERKY_WHISPER_COMPUTE_TYPE", "int8")
     BERKY_TRANSCRIBE_WINDOW_SECONDS = _env_float("BERKY_TRANSCRIBE_WINDOW_SECONDS", 6.0)
-    BERKY_SILENCE_SECONDS = _env_float("BERKY_SILENCE_SECONDS", 0.8)
+    # 0.5s (down from 0.8s) - safe to tighten now that real WebRTC VAD drives
+    # endpointing instead of a noisy RMS threshold, and this timeout is paid
+    # on every single turn, so it's one of the highest-leverage latency knobs.
+    BERKY_SILENCE_SECONDS = _env_float("BERKY_SILENCE_SECONDS", 0.5)
     # WebRTC VAD aggressiveness: 0 (least aggressive about filtering out
     # non-speech) to 3 (most aggressive). Higher values end silence segments
     # faster but risk clipping soft speech.
