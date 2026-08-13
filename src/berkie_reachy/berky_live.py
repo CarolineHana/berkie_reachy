@@ -21,6 +21,7 @@ from numpy.typing import NDArray
 
 from berkie_reachy.llm_engine_socket import LLMEngineSocketClient, _message_text
 from berkie_reachy.local_whisper import LocalWhisperSegmenter
+from berkie_reachy.transcript_routing import classify_channel
 from berkie_reachy.tts import CommandTTS
 from berkie_reachy.audio.head_wobbler import SAMPLE_RATE as WOBBLER_SAMPLE_RATE
 
@@ -134,7 +135,12 @@ class BerkyLiveHandler(AsyncStreamHandler):
             # the diarized label was computed and then silently discarded;
             # llm_engine never saw it and couldn't use it for speaker-count
             # questions.
-            await self.client.send_transcript(transcript, final=True, speaker=self.transcriber.last_speaker)
+            await self.client.send_transcript(
+                transcript,
+                final=True,
+                speaker=self.transcriber.last_speaker,
+                channel=classify_channel(transcript),
+            )
         except Exception:
             logger.warning("Failed to send transcript — LLM Engine disconnected, will retry on reconnect")
 

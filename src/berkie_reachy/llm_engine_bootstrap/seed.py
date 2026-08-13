@@ -31,6 +31,9 @@ DEFAULT_AGENT_CONFIG = {
 }
 DEFAULT_LLM_PLATFORM = "bedrock"
 DEFAULT_LLM_MODEL = "us.anthropic.claude-opus-4-6-v1"
+# eventHistorian's trigger/response channel is hardcoded upstream
+# (defaultTriggers.perMessage.channels) - must match exactly.
+HISTORIAN_CHANNEL = "historian"
 
 
 class SeedError(RuntimeError):
@@ -159,7 +162,11 @@ def ensure_seeded(
                 # Channels auto-generate a passcode unless explicitly disabled; this
                 # conversation is exclusively for Berky's own local backend, not a
                 # shared/public channel, so there's nothing to protect against.
-                "channels": [{"name": "transcript", "passcode": None}, {"name": "chat", "passcode": None}],
+                "channels": [
+                    {"name": "transcript", "passcode": None},
+                    {"name": "chat", "passcode": None},
+                    {"name": HISTORIAN_CHANNEL, "passcode": None},
+                ],
                 "agentTypes": [
                     {
                         "name": "voiceAssistant",
@@ -168,7 +175,18 @@ def ensure_seeded(
                             "llmPlatform": DEFAULT_LLM_PLATFORM,
                             "llmModel": DEFAULT_LLM_MODEL,
                         },
-                    }
+                    },
+                    {
+                        "name": "eventHistorian",
+                        "properties": {
+                            # Without topicIds, eventHistorian searches every
+                            # public topic system-wide - scope it to just this
+                            # conversation's own event.
+                            "agentConfig": {"botName": "Berkie", "topicIds": [topic_id]},
+                            "llmPlatform": DEFAULT_LLM_PLATFORM,
+                            "llmModel": DEFAULT_LLM_MODEL,
+                        },
+                    },
                 ],
             },
         )

@@ -29,6 +29,7 @@ from berkie_reachy.tts import CommandTTS
 from berkie_reachy.utils import setup_logger
 from berkie_reachy.local_whisper import LocalWhisperSegmenter
 from berkie_reachy.llm_engine_socket import LLMEngineSocketClient, _message_text
+from berkie_reachy.transcript_routing import classify_channel
 
 
 logger = logging.getLogger(__name__)
@@ -307,7 +308,12 @@ class BerkyReachyRuntime:
 
                 transcript = await self.transcriber.accept(input_sample_rate, frame)
                 if transcript:
-                    await self.client.send_transcript(transcript, final=True, speaker=self.transcriber.last_speaker)
+                    await self.client.send_transcript(
+                        transcript,
+                        final=True,
+                        speaker=self.transcriber.last_speaker,
+                        channel=classify_channel(transcript),
+                    )
 
                 await asyncio.sleep(0)
         finally:
@@ -329,7 +335,7 @@ class BerkyReachyRuntime:
                 if text in {"/quit", "/exit"}:
                     self.stop_event.set()
                     break
-                await self.client.send_transcript(text, final=True)
+                await self.client.send_transcript(text, final=True, channel=classify_channel(text))
         finally:
             await self.shutdown()
 

@@ -298,8 +298,21 @@ class LLMEngineSocketClient:
         except asyncio.TimeoutError:
             logger.warning("Timed out waiting for conversation:join acknowledgement")
 
-    async def send_transcript(self, text: str, *, final: bool = True, speaker: str | None = None) -> None:
-        """Send one transcript message to LLM Engine."""
+    async def send_transcript(
+        self,
+        text: str,
+        *,
+        final: bool = True,
+        speaker: str | None = None,
+        channel: str | None = None,
+    ) -> None:
+        """Send one transcript message to LLM Engine.
+
+        Posts to the usual transcript channel (triggers voiceAssistant) unless
+        ``channel`` names a different one already joined via
+        ``BERKY_RESPONSE_CHANNELS`` (e.g. "historian", to trigger eventHistorian
+        instead) - see transcript_routing.classify_channel.
+        """
         if self.session is None:
             raise RuntimeError("Cannot send transcript before connect().")
 
@@ -319,6 +332,8 @@ class LLMEngineSocketClient:
         if speaker:
             source["speaker"] = speaker
 
+        target_channel = [{"name": channel}] if channel else [_transcript_channel()]
+
         payload = {
             "token": self.session.token,
             "userId": self.session.user_id,
@@ -327,7 +342,7 @@ class LLMEngineSocketClient:
                 "body": clean_text,
                 "bodyType": "text",
                 "conversation": config.BERKIE_LLM_ENGINE_CONVERSATION_ID,
-                "channels": [_transcript_channel()],
+                "channels": target_channel,
                 "source": source,
             },
         }
