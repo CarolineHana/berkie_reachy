@@ -22,7 +22,7 @@ from numpy.typing import NDArray
 from berkie_reachy.llm_engine_socket import LLMEngineSocketClient, _message_text
 from berkie_reachy.local_whisper import LocalWhisperSegmenter
 from berkie_reachy.transcript_routing import classify_channel
-from berkie_reachy.tts import CommandTTS
+from berkie_reachy.tts import CommandTTS, split_into_speech_sentences
 from berkie_reachy.audio.head_wobbler import SAMPLE_RATE as WOBBLER_SAMPLE_RATE
 
 
@@ -80,33 +80,48 @@ class BerkyLiveHandler(AsyncStreamHandler):
         console.py's play_loop recognizes and pushes through robot.media -
         the robot's own speaker - rather than calling self.tts.speak(), which
         would play through this host machine's local audio output instead.
+
+        Synthesizes sentence-by-sentence with one-sentence lookahead (the
+        next chunk synthesizes concurrently with the current chunk's playback
+        wait) so playback starts on the first sentence instead of waiting for
+        the entire, possibly multi-sentence, response to render.
         """
         text = _message_text(message)
         if not text:
             return
 
-        synth = await self.tts.synthesize(text)
+        chunks = split_into_speech_sentences(text)
+        if not chunks:
+            return
 
-        if synth is not None:
-            sample_rate, samples = synth
-            self._feed_head_wobbler(samples, sample_rate)
-            # Mute the mic for the duration of playback - otherwise Berky's
-            # own voice, played through the robot's speaker, bleeds back into
-            # its mic and gets transcribed as if it were something the user
-            # said (observed live: repeated "Thank you." transcripts arriving
-            # while a response was still being spoken). Flush any
-            # in-progress buffer first so a partial segment doesn't carry
-            # across the mute boundary.
-            self.transcriber.flush()
-            self._speaking = True
-            try:
+        # Mute the mic for the duration of playback - otherwise Berky's own
+        # voice, played through the robot's speaker, bleeds back into its mic
+        # and gets transcribed as if it were something the user said (observed
+        # live: repeated "Thank you." transcripts arriving while a response
+        # was still being spoken). Flush any in-progress buffer first so a
+        # partial segment doesn't carry across the mute boundary.
+        self.transcriber.flush()
+        self._speaking = True
+        any_audio = False
+        try:
+            next_synth = asyncio.ensure_future(self.tts.synthesize(chunks[0]))
+            for i in range(len(chunks)):
+                synth = await next_synth
+                if i + 1 < len(chunks):
+                    next_synth = asyncio.ensure_future(self.tts.synthesize(chunks[i + 1]))
+                if synth is None:
+                    continue
+                any_audio = True
+                sample_rate, samples = synth
+                self._feed_head_wobbler(samples, sample_rate)
                 await self.output_queue.put(synth)
                 await asyncio.sleep(len(samples) / sample_rate)
-            finally:
-                self._speaking = False
-                if self._movement_manager is not None:
-                    self._movement_manager.set_speech_offsets((0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
-        else:
+        finally:
+            self._speaking = False
+            if self._movement_manager is not None:
+                self._movement_manager.set_speech_offsets((0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+
+        if not any_audio:
             # No file-capable TTS binary found; fall back to direct playback
             # on this machine so the response is at least audible somewhere.
             await self.tts.speak(text)

@@ -42,6 +42,42 @@ def _clean_for_speech(text: str) -> str:
     return text.strip()
 
 
+_SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?])\s+')
+# Below this, merge a fragment into the next one rather than emitting it as its
+# own TTS call - each call pays a fixed subprocess-startup cost, so splitting
+# too finely (e.g. on every short "Yes." / "No.") trades that overhead for no
+# real latency benefit.
+_MIN_CHUNK_CHARS = 40
+
+
+def split_into_speech_sentences(text: str) -> list[str]:
+    """Split cleaned text into sentence-sized chunks for incremental TTS playback.
+
+    Lets the caller start synthesizing/playing the first chunk without
+    waiting for the entire (possibly multi-sentence) response to render.
+    """
+    text = text.strip()
+    if not text:
+        return []
+    raw_parts = [p.strip() for p in _SENTENCE_SPLIT_RE.split(text) if p.strip()]
+    if not raw_parts:
+        return [text]
+
+    chunks: list[str] = []
+    buffer = ""
+    for part in raw_parts:
+        buffer = f"{buffer} {part}".strip() if buffer else part
+        if len(buffer) >= _MIN_CHUNK_CHARS:
+            chunks.append(buffer)
+            buffer = ""
+    if buffer:
+        if chunks:
+            chunks[-1] = f"{chunks[-1]} {buffer}".strip()
+        else:
+            chunks.append(buffer)
+    return chunks
+
+
 def _default_tts_command() -> str | None:
     if config.BERKY_TTS_COMMAND:
         return config.BERKY_TTS_COMMAND
@@ -139,6 +175,22 @@ class CommandTTS:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+
+    async def speak_chunked(self, text: str) -> None:
+        """Speak text sentence-by-sentence instead of as one clip.
+
+        Playback of the first sentence can start as soon as it's synthesized,
+        rather than waiting for the entire (possibly multi-sentence) response
+        to render - the dominant lever for cutting time-to-first-audio on
+        longer responses.
+        """
+        if not self.command_template:
+            clean_text = " ".join(_clean_for_speech(text).split())
+            if clean_text:
+                logger.warning("No TTS command configured; agent said: %s", clean_text)
+            return
+        for chunk in split_into_speech_sentences(text):
+            await self.speak(chunk)
 
     def _argv(self, text: str) -> list[str]:
         parts = shlex.split(self.command_template or "")

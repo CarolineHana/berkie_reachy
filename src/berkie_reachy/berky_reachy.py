@@ -273,7 +273,7 @@ class BerkyReachyRuntime:
         logger.info("Berky agent response: %s", text)
         stop_speaking = self._start_speaking_motion()
         try:
-            await self.tts.speak(text)
+            await self.tts.speak_chunked(text)
         finally:
             stop_speaking()
 
