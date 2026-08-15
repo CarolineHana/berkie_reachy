@@ -111,23 +111,39 @@ def ensure_yarn_ready() -> str:
 
 
 def ensure_dependencies_installed(src_dir: Path, yarn_cmd: str) -> None:
-    """Run `yarn install` if node_modules is missing (first run on this host)."""
+    """Run `yarn install` if node_modules is missing, or stale relative to the checked-out commit.
+
+    repo.py resets this checkout to origin's tip on every launch, so
+    node_modules existing isn't proof it matches the *current* package.json/
+    yarn.lock - only that some earlier run finished install successfully.
+    """
     node_modules = src_dir / "node_modules"
-    if node_modules.exists():
-        logger.debug("node_modules already present, skipping yarn install")
+    marker = node_modules / ".berky-install-commit"
+    if node_modules.exists() and not state.build_is_stale(src_dir, marker):
+        logger.debug("node_modules already present and current, skipping yarn install")
         return
     logger.info("Installing llm_engine dependencies (this can take a few minutes on first run)...")
     subprocess.run([yarn_cmd, "install", "--frozen-lockfile"], cwd=str(src_dir), check=True)
+    state.write_build_marker(src_dir, marker)
 
 
 def ensure_built(src_dir: Path, yarn_cmd: str) -> None:
-    """Run `yarn build` (tsc) if the compiled entrypoint is missing."""
+    """Run `yarn build` (tsc) if the compiled entrypoint is missing, or stale relative to source.
+
+    Same staleness concern as ensure_dependencies_installed: the entrypoint
+    existing only proves *some* past commit built successfully, not that
+    dist/ reflects what's checked out now - confirmed to actually happen
+    (a feature merged upstream sat completely inert because dist/ was never
+    rebuilt after the checkout advanced past it).
+    """
     entrypoint = src_dir / "dist" / "src" / "index.js"
-    if entrypoint.exists():
-        logger.debug("llm_engine already built, skipping yarn build")
+    marker = src_dir / "dist" / ".berky-build-commit"
+    if entrypoint.exists() and not state.build_is_stale(src_dir, marker):
+        logger.debug("llm_engine already built and current, skipping yarn build")
         return
     logger.info("Building llm_engine...")
     subprocess.run([yarn_cmd, "build"], cwd=str(src_dir), check=True)
+    state.write_build_marker(src_dir, marker)
 
 
 def is_llm_engine_healthy() -> bool:

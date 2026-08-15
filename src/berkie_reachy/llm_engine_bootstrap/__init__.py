@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-from berkie_reachy.llm_engine_bootstrap import state, repo, mongo, chroma, node, seed
+from berkie_reachy.llm_engine_bootstrap import state, repo, mongo, chroma, node, seed, archive_wiki
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,7 @@ class StackStatus:
     mongo_running: bool = False
     chroma_running: bool = False
     chroma_installed: bool = False
+    archive_wiki_running: bool = False
     llm_engine_healthy: bool = False
     seeded: bool = False
     error: Optional[str] = None
@@ -160,7 +161,11 @@ def _resolve_tavily_key(explicit: str = "") -> str:
 
 
 def _build_llm_engine_env(
-    bedrock_api_key: str, bedrock_base_url: str, openai_api_key: str, tavily_api_key: str = ""
+    bedrock_api_key: str,
+    bedrock_base_url: str,
+    openai_api_key: str,
+    tavily_api_key: str = "",
+    archive_wiki_url: Optional[str] = None,
 ) -> dict[str, str]:
     """Build the env for the llm_engine child process.
 
@@ -187,6 +192,8 @@ def _build_llm_engine_env(
         env["DEFAULT_OPENAI_API_KEY"] = openai_api_key
     if tavily_api_key:
         env["TAVILY_API_KEY"] = tavily_api_key
+    if archive_wiki_url:
+        env["BKC_ARCHIVE_API_URL"] = archive_wiki_url
     return env
 
 
@@ -275,11 +282,24 @@ def run_bootstrap(
         registry.status.chroma_running = True
         report("chroma", "Chroma running")
 
+        # Best-effort: Berky's core voice loop (web_search, event_history) works
+        # fine without this, so a clone/build/start failure here never blocks
+        # the rest of the bootstrap - it just leaves eventHistorian's archive
+        # search tools unavailable.
+        archive_wiki_url = archive_wiki.ensure_archive_wiki_stack()
+        registry.status.archive_wiki_running = archive_wiki_url is not None
+        report(
+            "archive_wiki",
+            f"BKC archive-wiki API running at {archive_wiki_url}" if archive_wiki_url else "BKC archive-wiki API unavailable; continuing without it",
+        )
+
         yarn_cmd = node.ensure_yarn_ready()
         node.ensure_dependencies_installed(src_dir, yarn_cmd)
         node.ensure_built(src_dir, yarn_cmd)
         resolved_tavily_key = _resolve_tavily_key(tavily_api_key)
-        env = _build_llm_engine_env(bedrock_api_key, bedrock_base_url, resolved_openai_key, resolved_tavily_key)
+        env = _build_llm_engine_env(
+            bedrock_api_key, bedrock_base_url, resolved_openai_key, resolved_tavily_key, archive_wiki_url
+        )
         node.ensure_llm_engine_running(src_dir, env)
         registry.status.llm_engine_healthy = True
         report("llm_engine", "llm_engine healthy")
@@ -324,6 +344,7 @@ def run_bootstrap(
 def stop_stack() -> None:
     """Stop every service this process started (safe to call even if nothing was started)."""
     node.stop_llm_engine_if_started_by_us()
+    archive_wiki.stop_archive_wiki_if_started_by_us()
     chroma.stop_chroma_if_started_by_us()
     mongo.stop_mongo_if_started_by_us()
 

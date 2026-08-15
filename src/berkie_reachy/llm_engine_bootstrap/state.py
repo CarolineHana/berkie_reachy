@@ -15,6 +15,7 @@ import signal
 import secrets
 import logging
 import contextlib
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -58,6 +59,7 @@ def find_executable(name: str) -> Optional[str]:
     return None
 
 APP_DATA_ROOT = Path.home() / ".berkie_reachy" / "llm_backend"
+ARCHIVE_WIKI_DATA_ROOT = Path.home() / ".berkie_reachy" / "archive_wiki"
 
 LLM_ENGINE_SRC_DIR = APP_DATA_ROOT / "llm_engine-src"
 MONGO_DATA_DIR = APP_DATA_ROOT / "mongo-data"
@@ -66,15 +68,26 @@ RUN_DIR = APP_DATA_ROOT / "run"
 LOGS_DIR = APP_DATA_ROOT / "logs"
 RUNTIME_ENV_PATH = APP_DATA_ROOT / "runtime.env"
 
+ARCHIVE_WIKI_SRC_DIR = ARCHIVE_WIKI_DATA_ROOT / "bkc-archive-wiki"
+
 MONGO_PORT = 27017
 CHROMA_PORT = 8002  # NOT 8000 - the reachy_mini daemon-detection probe uses 8000
 LLM_ENGINE_PORT = 3000
 LLM_ENGINE_WS_PORT = 5555
+ARCHIVE_WIKI_PORT = 4000
 
 
 def ensure_dirs() -> None:
     """Create all persistent state directories if missing."""
-    for d in (APP_DATA_ROOT, LLM_ENGINE_SRC_DIR.parent, MONGO_DATA_DIR, CHROMA_DATA_DIR, RUN_DIR, LOGS_DIR):
+    for d in (
+        APP_DATA_ROOT,
+        LLM_ENGINE_SRC_DIR.parent,
+        MONGO_DATA_DIR,
+        CHROMA_DATA_DIR,
+        RUN_DIR,
+        LOGS_DIR,
+        ARCHIVE_WIKI_SRC_DIR.parent,
+    ):
         d.mkdir(parents=True, exist_ok=True)
 
 
@@ -140,6 +153,47 @@ def stop_pid(pid: int, *, term_signal: int = signal.SIGTERM, timeout: float = 10
         time.sleep(0.2)
     with contextlib.suppress(ProcessLookupError):
         os.kill(pid, signal.SIGKILL)
+
+
+def _current_git_commit(repo_dir: Path) -> Optional[str]:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(repo_dir), capture_output=True, text=True, timeout=10
+        )
+        return result.stdout.strip() if result.returncode == 0 else None
+    except Exception:
+        return None
+
+
+def build_is_stale(repo_dir: Path, build_marker: Path) -> bool:
+    """Return True if repo_dir's checked-out commit differs from what build_marker last recorded.
+
+    Used to detect "the source was reset to a new commit (see repo.py's
+    fetch+reset-hard-on-every-launch) but the compiled output was never
+    rebuilt" - node_modules/dist existing is not proof they're current, only
+    that some past run finished successfully. Missing the git commit (e.g.
+    not actually a git checkout) never forces a rebuild - only an explicit
+    marker mismatch does.
+    """
+    current = _current_git_commit(repo_dir)
+    if current is None:
+        return False
+    if not build_marker.exists():
+        return True
+    try:
+        recorded = build_marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        return True
+    return recorded != current
+
+
+def write_build_marker(repo_dir: Path, build_marker: Path) -> None:
+    """Record repo_dir's current commit into build_marker after a successful install/build."""
+    current = _current_git_commit(repo_dir)
+    if current is None:
+        return
+    build_marker.parent.mkdir(parents=True, exist_ok=True)
+    build_marker.write_text(current, encoding="utf-8")
 
 
 def get_or_create_jwt_secret() -> str:
