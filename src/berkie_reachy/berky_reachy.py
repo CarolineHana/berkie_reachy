@@ -29,7 +29,6 @@ from berkie_reachy.tts import CommandTTS
 from berkie_reachy.utils import setup_logger
 from berkie_reachy.local_whisper import LocalWhisperSegmenter
 from berkie_reachy.llm_engine_socket import LLMEngineSocketClient, _message_text
-from berkie_reachy.transcript_routing import classify_channel
 
 
 logger = logging.getLogger(__name__)
@@ -216,7 +215,26 @@ class BerkyReachyRuntime:
         self.stop_event = asyncio.Event()
         self._movement_manager: Any | None = None
         self._movement_thread_started = False
-        self.client = LLMEngineSocketClient(on_agent_message=self._on_agent_message)
+        self.client = LLMEngineSocketClient(
+            on_agent_message=self._on_agent_message,
+            on_answer_chunk=self._on_answer_chunk,
+        )
+        # Streaming (see llm_engine's llmChain.ts streamAgentAndReportChunks): sentences
+        # arrive one at a time, well before the full response is ready, via
+        # berky:answer_chunk. _chunk_queue/_chunk_worker_task speak them as they arrive;
+        # _streamed_last_response flags to _on_agent_message that the full text it just
+        # got has already been spoken, so it shouldn't be synthesized again.
+        self._chunk_queue: "asyncio.Queue[str]" = asyncio.Queue()
+        self._chunk_worker_task: asyncio.Task[None] | None = None
+        self._streaming_active = False
+        self._streamed_last_response = False
+        self._stop_speaking_motion: Callable[[], None] | None = None
+        # requestId of the turn currently being spoken, or None between turns. Guards against
+        # two turns' chunks landing in the same _chunk_queue and being spoken as one blended
+        # answer (e.g. if the mic picks something up during the pre-first-chunk buffering
+        # window and triggers a second turn before this one finishes) - see
+        # llm_engine_socket.py's berky:answer_chunk handler for where request_id comes from.
+        self._active_request_id: str | None = None
 
     def _start_speaking_motion(self) -> Callable[[], None]:
         """Drive a gentle head-bob via set_speech_offsets while Berkie speaks.
@@ -266,11 +284,77 @@ class BerkyReachyRuntime:
 
         return stop
 
+    async def _chunk_worker(self) -> None:
+        """Background consumer: speak sentences off _chunk_queue one at a time, in order."""
+        while True:
+            sentence = await self._chunk_queue.get()
+            try:
+                await self.tts.speak(sentence)
+            except Exception:
+                logger.warning("Failed to speak streamed chunk %r", sentence, exc_info=True)
+            finally:
+                self._chunk_queue.task_done()
+
+    async def _on_answer_chunk(self, request_id: str, text: str, done: bool) -> None:
+        """Speak one incremental sentence of a still-generating answer as it arrives.
+
+        See llm_engine's llmChain.ts streamAgentAndReportChunks - this is the client side
+        of that: instead of waiting for the full response (_on_agent_message), start
+        speaking each sentence the moment it's generated.
+        """
+        if self._active_request_id is not None and request_id != self._active_request_id:
+            logger.warning(
+                "Dropping answer chunk for request_id=%s; a different turn (%s) is still active",
+                request_id,
+                self._active_request_id,
+            )
+            return
+
+        if self._active_request_id is None:
+            self._active_request_id = request_id
+            self._streaming_active = True
+            self._stop_speaking_motion = self._start_speaking_motion()
+            if self._chunk_worker_task is None or self._chunk_worker_task.done():
+                self._chunk_worker_task = asyncio.create_task(self._chunk_worker(), name="chunk-speaker")
+
+        if text.strip():
+            await self._chunk_queue.put(text.strip())
+
+        if done:
+            # Set this before awaiting playback below: the server emits the persisted final
+            # message (-> _on_agent_message) right after this done signal, which can easily
+            # arrive and get processed while the last queued sentences are still playing. If
+            # _streamed_last_response isn't already True by then, _on_agent_message falls
+            # through to its own full-text synthesis and speaks the whole answer a second time
+            # on top of the tail end of the streamed version - confirmed live ("says the same
+            # thing twice").
+            self._streamed_last_response = True
+            self._active_request_id = None
+            await self._chunk_queue.join()
+            self._streaming_active = False
+            if self._stop_speaking_motion is not None:
+                self._stop_speaking_motion()
+                self._stop_speaking_motion = None
+
     async def _on_agent_message(self, message: dict[str, Any]) -> None:
+        """Speak one agent message.
+
+        If this response already streamed sentence-by-sentence via
+        _on_answer_chunk, it's already been fully spoken - nothing left to do.
+        Otherwise (streaming didn't fire, e.g. an older agent or an error),
+        fall back to synthesizing the whole text here, still sentence-by-
+        sentence so playback starts on the first sentence rather than waiting
+        for the entire response.
+        """
         text = _message_text(message)
         if not text:
             return
         logger.info("Berky agent response: %s", text)
+
+        if self._streamed_last_response:
+            self._streamed_last_response = False
+            return
+
         stop_speaking = self._start_speaking_motion()
         try:
             await self.tts.speak_chunked(text)
@@ -312,7 +396,6 @@ class BerkyReachyRuntime:
                         transcript,
                         final=True,
                         speaker=self.transcriber.last_speaker,
-                        channel=classify_channel(transcript),
                     )
 
                 await asyncio.sleep(0)
@@ -335,7 +418,7 @@ class BerkyReachyRuntime:
                 if text in {"/quit", "/exit"}:
                     self.stop_event.set()
                     break
-                await self.client.send_transcript(text, final=True, channel=classify_channel(text))
+                await self.client.send_transcript(text, final=True)
         finally:
             await self.shutdown()
 
@@ -346,6 +429,9 @@ class BerkyReachyRuntime:
             self.robot.media.stop_recording()
         except Exception:
             logger.debug("Error stopping recording", exc_info=True)
+
+        if self._chunk_worker_task is not None and not self._chunk_worker_task.done():
+            self._chunk_worker_task.cancel()
 
         await self.client.disconnect()
 

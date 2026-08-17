@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 JsonDict = dict[str, Any]
 AgentMessageCallback = Callable[[JsonDict], Awaitable[None]]
+# (requestId, text, done) - one incremental sentence of a still-generating agent answer, or a
+# final (text="", done=True) marker. See llm_engine's llmChain.ts streamAgentAndReportChunks.
+AnswerChunkCallback = Callable[[str, str, bool], Awaitable[None]]
 
 
 def _strip(value: object) -> str:
@@ -111,13 +114,19 @@ class AuthSession:
 class LLMEngineSocketClient:
     """Thin client over LLM Engine's existing Socket.IO message API."""
 
-    def __init__(self, *, on_agent_message: AgentMessageCallback) -> None:
+    def __init__(
+        self,
+        *,
+        on_agent_message: AgentMessageCallback,
+        on_answer_chunk: AnswerChunkCallback | None = None,
+    ) -> None:
         try:
             import socketio
         except ImportError as exc:
             raise RuntimeError("Install python-socketio to use the Berky LLM Engine socket client.") from exc
 
         self.on_agent_message = on_agent_message
+        self.on_answer_chunk = on_answer_chunk
         self.session: AuthSession | None = None
         self.sio = socketio.AsyncClient(
             reconnection=True,
@@ -147,6 +156,16 @@ class LLMEngineSocketClient:
             if not self._is_relevant_agent_message(message):
                 return
             await self.on_agent_message(message)
+
+        @self.sio.on("berky:answer_chunk")
+        async def answer_chunk(data: JsonDict) -> None:
+            if self.on_answer_chunk is None:
+                return
+            request_id = data.get("requestId")
+            if not isinstance(request_id, str) or not request_id:
+                return
+            text = data.get("text")
+            await self.on_answer_chunk(request_id, text if isinstance(text, str) else "", bool(data.get("done")))
 
         @self.sio.on("error")
         async def error(data: JsonDict) -> None:
@@ -304,15 +323,8 @@ class LLMEngineSocketClient:
         *,
         final: bool = True,
         speaker: str | None = None,
-        channel: str | None = None,
     ) -> None:
-        """Send one transcript message to LLM Engine.
-
-        Posts to the usual transcript channel (triggers voiceAssistant) unless
-        ``channel`` names a different one already joined via
-        ``BERKY_RESPONSE_CHANNELS`` (e.g. "historian", to trigger eventHistorian
-        instead) - see transcript_routing.classify_channel.
-        """
+        """Send one transcript message to LLM Engine on the transcript channel."""
         if self.session is None:
             raise RuntimeError("Cannot send transcript before connect().")
 
@@ -332,8 +344,6 @@ class LLMEngineSocketClient:
         if speaker:
             source["speaker"] = speaker
 
-        target_channel = [{"name": channel}] if channel else [_transcript_channel()]
-
         payload = {
             "token": self.session.token,
             "userId": self.session.user_id,
@@ -342,7 +352,7 @@ class LLMEngineSocketClient:
                 "body": clean_text,
                 "bodyType": "text",
                 "conversation": config.BERKIE_LLM_ENGINE_CONVERSATION_ID,
-                "channels": target_channel,
+                "channels": [_transcript_channel()],
                 "source": source,
             },
         }
@@ -360,7 +370,7 @@ class LLMEngineSocketClient:
         if not message.get("fromAgent"):
             return False
 
-        # voiceAssistant posts JSON body with source='voice'.
+        # reachyLiveAgent posts JSON body with source='voice'.
         # Filter to only those so Reachy doesn't speak check-ins, intros, etc.
         body = message.get("body")
         if message.get("bodyType") == "json" and isinstance(body, dict):

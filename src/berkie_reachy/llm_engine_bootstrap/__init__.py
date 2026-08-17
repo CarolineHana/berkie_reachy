@@ -284,7 +284,7 @@ def run_bootstrap(
 
         # Best-effort: Berky's core voice loop (web_search, event_history) works
         # fine without this, so a clone/build/start failure here never blocks
-        # the rest of the bootstrap - it just leaves eventHistorian's archive
+        # the rest of the bootstrap - it just leaves reachyLiveAgent's archive
         # search tools unavailable.
         archive_wiki_url = archive_wiki.ensure_archive_wiki_stack()
         registry.status.archive_wiki_running = archive_wiki_url is not None

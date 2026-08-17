@@ -185,11 +185,7 @@ class Config:
     TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
     BERKY_TRANSCRIPT_CHANNEL = os.getenv("BERKY_TRANSCRIPT_CHANNEL", "transcript")
     BERKY_TRANSCRIPT_CHANNEL_PASSCODE = os.getenv("BERKY_TRANSCRIPT_CHANNEL_PASSCODE")
-    # "historian" is eventHistorian's hardcoded trigger/response channel
-    # (llm_engine's defaultTriggers.perMessage.channels) - joining it lets
-    # Reachy also speak its replies when transcript_routing.classify_channel
-    # routes a question there instead of the usual "chat" channel.
-    BERKY_RESPONSE_CHANNELS = _env_list("BERKY_RESPONSE_CHANNELS", ["chat", "historian"])
+    BERKY_RESPONSE_CHANNELS = _env_list("BERKY_RESPONSE_CHANNELS", ["chat"])
     BERKY_WAKE_PHRASE = os.getenv("BERKY_WAKE_PHRASE", "hey berkie")
     # small.en trades a bit of latency for meaningfully better accuracy on the
     # wake phrase itself - base.en was mis-hearing "hey berkie" too often
