@@ -9,29 +9,33 @@ robot's own speaker.
 
 from __future__ import annotations
 
-import base64
 import asyncio
 import logging
-from typing import Any, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
-import numpy as np
 from fastrtc import AdditionalOutputs, AsyncStreamHandler, wait_for_item
-from scipy.signal import resample
 from numpy.typing import NDArray
 
+from berkie_reachy.config import config
 from berkie_reachy.llm_engine_socket import LLMEngineSocketClient, _message_text
 from berkie_reachy.local_whisper import LocalWhisperSegmenter
+from berkie_reachy.moves import start_thinking_motion
+from berkie_reachy.openai_realtime import contains_wake_phrase
 from berkie_reachy.tts import CommandTTS, split_into_speech_sentences
-from berkie_reachy.audio.head_wobbler import SAMPLE_RATE as WOBBLER_SAMPLE_RATE
 
 
 logger = logging.getLogger(__name__)
+
+# Longer than any observed real response (worst case seen ~18s for a tool-heavy archive
+# question) - bounds how long the thinking motion runs if a wake-ish transcript never
+# actually gets a response (e.g. a mis-transcription that doesn't match server-side either).
+THINKING_TIMEOUT_SECONDS = 30.0
 
 
 class BerkyLiveHandler(AsyncStreamHandler):
     """Stream browser audio to Berky via local Whisper and LLM Engine."""
 
-    def __init__(self, movement_manager: Optional[Any] = None, head_wobbler: Optional[Any] = None) -> None:
+    def __init__(self, movement_manager: Optional[Any] = None) -> None:
         super().__init__(expected_layout="mono", output_sample_rate=16000, input_sample_rate=16000)
         self.output_queue: "asyncio.Queue[AdditionalOutputs | Tuple[int, NDArray[Any]]]" = asyncio.Queue()
         self.transcriber = LocalWhisperSegmenter()
@@ -42,7 +46,6 @@ class BerkyLiveHandler(AsyncStreamHandler):
         )
         self._connected = False
         self._movement_manager = movement_manager
-        self._head_wobbler = head_wobbler
         self._speaking = False
         # Streaming (see llm_engine's llmChain.ts streamAgentAndReportChunks): sentences
         # arrive one at a time, well before the full response is ready, via
@@ -62,6 +65,12 @@ class BerkyLiveHandler(AsyncStreamHandler):
         self._chunk_worker_task: Optional[asyncio.Task[None]] = None
         self._streaming_active = False
         self._streamed_last_response = False
+        # Head motion happens while Berkie is "thinking" (generating a response) and holds
+        # still once actual audio starts - see moves.start_thinking_motion. _thinking_token
+        # invalidates a stale watchdog if thinking starts again before an earlier one's
+        # timeout fires (e.g. two quick wake attempts).
+        self._thinking_stop: Optional[Callable[[], None]] = None
+        self._thinking_token = 0
         # requestId of the turn currently being spoken, or None between turns. Guards against
         # two turns' chunks landing in the same _chunk_queue and being spoken as one blended
         # answer (e.g. if the mic picks something up during the pre-first-chunk buffering
@@ -71,7 +80,7 @@ class BerkyLiveHandler(AsyncStreamHandler):
 
     def copy(self) -> "BerkyLiveHandler":
         """Create a fresh handler for a new stream session."""
-        return BerkyLiveHandler(movement_manager=self._movement_manager, head_wobbler=self._head_wobbler)
+        return BerkyLiveHandler(movement_manager=self._movement_manager)
 
     async def start_up(self) -> None:
         """Connect to LLM Engine before audio starts flowing."""
@@ -81,23 +90,30 @@ class BerkyLiveHandler(AsyncStreamHandler):
         self._connected = True
         logger.info("Berky live handler connected to LLM Engine")
 
-    def _feed_head_wobbler(self, samples: NDArray[np.int16], sample_rate: int) -> None:
-        """Drive audio-cadence head movement from the synthesized speech itself.
+    def _begin_thinking(self) -> None:
+        """Start head motion for a response that's presumably being generated.
 
-        HeadWobbler/SwayRollRT analyze the actual audio envelope (loudness,
-        voice-activity attack/release) to sway the head in step with real
-        speech rhythm, rather than a generic fixed animation - it just always
-        assumes SAMPLE_RATE-rate PCM16 input (matching the OpenAI realtime
-        API's output format, its other caller), so resample to that first.
+        Called speculatively on any transcript that looks like a wake attempt, before we
+        know whether the server will actually treat it as one - harmless if it doesn't,
+        since the watchdog below stops the motion on its own if nothing ever answers.
         """
-        if self._head_wobbler is None:
-            return
-        audio = samples
-        if sample_rate != WOBBLER_SAMPLE_RATE:
-            audio = resample(audio.astype(np.float32), int(len(audio) * WOBBLER_SAMPLE_RATE / sample_rate))
-            audio = audio.astype(np.int16)
-        self._head_wobbler.reset()
-        self._head_wobbler.feed(base64.b64encode(audio.tobytes()).decode("ascii"))
+        self._end_thinking()
+        self._thinking_token += 1
+        token = self._thinking_token
+        self._thinking_stop = start_thinking_motion(self._movement_manager)
+
+        async def _watchdog() -> None:
+            await asyncio.sleep(THINKING_TIMEOUT_SECONDS)
+            if self._thinking_token == token:
+                self._end_thinking()
+
+        asyncio.create_task(_watchdog())
+
+    def _end_thinking(self) -> None:
+        """Stop head motion - called right before real audio starts, or by the watchdog."""
+        if self._thinking_stop is not None:
+            self._thinking_stop()
+            self._thinking_stop = None
 
     async def _synth_worker(self) -> None:
         """Continuously synthesize sentences off _chunk_queue into _synth_queue.
@@ -118,13 +134,16 @@ class BerkyLiveHandler(AsyncStreamHandler):
             await self._synth_queue.put(synth)
 
     async def _chunk_worker(self) -> None:
-        """Background consumer: play synthesized sentences off _synth_queue one at a time, in order."""
+        """Background consumer: play synthesized sentences off _synth_queue one at a time, in order.
+
+        The head holds still while actually speaking (see _begin_thinking/_end_thinking);
+        motion happens beforehand, while the answer is still being generated.
+        """
         while True:
             synth = await self._synth_queue.get()
             try:
                 if synth is not None:
                     sample_rate, samples = synth
-                    self._feed_head_wobbler(samples, sample_rate)
                     await self.output_queue.put(synth)
                     await asyncio.sleep(len(samples) / sample_rate)
             finally:
@@ -146,6 +165,7 @@ class BerkyLiveHandler(AsyncStreamHandler):
             return
 
         if self._active_request_id is None:
+            self._end_thinking()  # real audio is about to start - hold the head still for it
             self._active_request_id = request_id
             self._streaming_active = True
             # Mute the mic for the duration of playback - see _on_agent_message for why.
@@ -204,6 +224,8 @@ class BerkyLiveHandler(AsyncStreamHandler):
         if not chunks:
             return
 
+        self._end_thinking()  # real audio is about to start - hold the head still for it
+
         # Mute the mic for the duration of playback - otherwise Berky's own
         # voice, played through the robot's speaker, bleeds back into its mic
         # and gets transcribed as if it were something the user said (observed
@@ -223,7 +245,6 @@ class BerkyLiveHandler(AsyncStreamHandler):
                     continue
                 any_audio = True
                 sample_rate, samples = synth
-                self._feed_head_wobbler(samples, sample_rate)
                 await self.output_queue.put(synth)
                 await asyncio.sleep(len(samples) / sample_rate)
         finally:
@@ -254,6 +275,8 @@ class BerkyLiveHandler(AsyncStreamHandler):
 
         logger.info("Browser transcript: %s", transcript)
         await self.output_queue.put(AdditionalOutputs({"role": "user", "content": transcript}))
+        if contains_wake_phrase(transcript, config.BERKY_WAKE_PHRASE or ""):
+            self._begin_thinking()
         try:
             # last_speaker comes from diarization (see LocalWhisperSegmenter),
             # if enabled - previously never passed through here at all, so

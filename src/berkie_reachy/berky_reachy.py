@@ -8,30 +8,37 @@ This process is the physical layer:
 """
 
 from __future__ import annotations
-
-import time
-import math
 import os
-import importlib.util
+import sys
+import time
+import socket
 import asyncio
 import logging
 import argparse
-import socket
 import subprocess
-import sys
-import threading
-from pathlib import Path
+import importlib.util
 from typing import Any, Callable
+from pathlib import Path
+
+from fastrtc import audio_to_float32
+from scipy.signal import resample
 
 from reachy_mini import ReachyMini
-
-from berkie_reachy.tts import CommandTTS
+from berkie_reachy.tts import CommandTTS, split_into_speech_sentences
+from berkie_reachy.moves import start_thinking_motion
 from berkie_reachy.utils import setup_logger
+from berkie_reachy.config import config
 from berkie_reachy.local_whisper import LocalWhisperSegmenter
+from berkie_reachy.openai_realtime import contains_wake_phrase
 from berkie_reachy.llm_engine_socket import LLMEngineSocketClient, _message_text
 
 
 logger = logging.getLogger(__name__)
+
+# Longer than any observed real response (worst case seen ~18s for a tool-heavy archive
+# question) - bounds how long the thinking motion runs if a wake-ish transcript never
+# actually gets a response (e.g. a mis-transcription that doesn't match server-side either).
+THINKING_TIMEOUT_SECONDS = 30.0
 
 
 def _prepend_env_path(name: str, values: list[Path]) -> None:
@@ -228,7 +235,12 @@ class BerkyReachyRuntime:
         self._chunk_worker_task: asyncio.Task[None] | None = None
         self._streaming_active = False
         self._streamed_last_response = False
-        self._stop_speaking_motion: Callable[[], None] | None = None
+        # Head motion happens while Berkie is "thinking" (generating a response) and holds
+        # still once actual audio starts - see moves.start_thinking_motion. _thinking_token
+        # invalidates a stale watchdog if thinking starts again before an earlier one's
+        # timeout fires (e.g. two quick wake attempts).
+        self._thinking_stop: Callable[[], None] | None = None
+        self._thinking_token = 0
         # requestId of the turn currently being spoken, or None between turns. Guards against
         # two turns' chunks landing in the same _chunk_queue and being spoken as one blended
         # answer (e.g. if the mic picks something up during the pre-first-chunk buffering
@@ -236,60 +248,61 @@ class BerkyReachyRuntime:
         # llm_engine_socket.py's berky:answer_chunk handler for where request_id comes from.
         self._active_request_id: str | None = None
 
-    def _start_speaking_motion(self) -> Callable[[], None]:
-        """Drive a gentle head-bob via set_speech_offsets while Berkie speaks.
+    def _begin_thinking(self) -> None:
+        """Start head motion for a response that's presumably being generated.
 
-        Returns a stop() callable that the caller must invoke when TTS ends.
-        No-ops safely if the movement manager is unavailable.
+        Called speculatively on any transcript that looks like a wake attempt, before we
+        know whether the server will actually treat it as one - harmless if it doesn't,
+        since the watchdog below stops the motion on its own if nothing ever answers.
         """
-        if self._movement_manager is None:
-            return lambda: None
+        self._end_thinking()
+        self._thinking_token += 1
+        token = self._thinking_token
+        self._thinking_stop = start_thinking_motion(self._movement_manager)
 
-        stop_event = threading.Event()
+        async def _watchdog() -> None:
+            await asyncio.sleep(THINKING_TIMEOUT_SECONDS)
+            if self._thinking_token == token:
+                self._end_thinking()
 
-        def _loop() -> None:
-            # Gentle nod: pitch oscillates at ~1.8 Hz, ±6°
-            # Subtle sway: yaw oscillates at ~0.5 Hz, ±2°
-            PITCH_AMP = math.radians(6)
-            PITCH_FREQ = 1.8
-            YAW_AMP = math.radians(2)
-            YAW_FREQ = 0.5
-            ZERO = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        asyncio.create_task(_watchdog())
 
-            t0 = time.monotonic()
-            try:
-                while not stop_event.is_set():
-                    t = time.monotonic() - t0
-                    pitch = PITCH_AMP * math.sin(2 * math.pi * PITCH_FREQ * t)
-                    yaw = YAW_AMP * math.sin(2 * math.pi * YAW_FREQ * t)
-                    try:
-                        self._movement_manager.set_speech_offsets(
-                            (0.0, 0.0, 0.0, 0.0, pitch, yaw)
-                        )
-                    except Exception:
-                        break
-                    time.sleep(0.02)  # ~50 Hz update rate
-            finally:
-                try:
-                    self._movement_manager.set_speech_offsets(ZERO)
-                except Exception:
-                    pass
+    def _end_thinking(self) -> None:
+        """Stop head motion - called right before real audio starts, or by the watchdog."""
+        if self._thinking_stop is not None:
+            self._thinking_stop()
+            self._thinking_stop = None
 
-        thread = threading.Thread(target=_loop, daemon=True)
-        thread.start()
+    async def _play_through_robot(self, text: str) -> None:
+        """Synthesize ``text`` and play it through Reachy's own speaker.
 
-        def stop() -> None:
-            stop_event.set()
-            thread.join(timeout=0.5)
+        Mirrors console.py's play_loop / berky_live.py's synthesize()+push pattern:
+        self.tts.speak()/speak_chunked() shell out to a local TTS binary that plays on
+        *this* machine's audio output, which isn't what's wanted when the robot is
+        physically present and should be heard responding through its own speaker.
+        Falls back to local playback only if no file-capable TTS binary is available.
+        """
+        synth = await self.tts.synthesize(text)
+        if synth is None:
+            await self.tts.speak(text)
+            return
 
-        return stop
+        sample_rate, samples = synth
+        audio_frame = audio_to_float32(samples)
+        output_sample_rate = self.robot.media.get_output_audio_samplerate()
+        if sample_rate != output_sample_rate:
+            audio_frame = resample(audio_frame, int(len(audio_frame) * output_sample_rate / sample_rate))
+            sample_rate = output_sample_rate
+
+        self.robot.media.push_audio_sample(audio_frame)
+        await asyncio.sleep(len(audio_frame) / sample_rate)
 
     async def _chunk_worker(self) -> None:
         """Background consumer: speak sentences off _chunk_queue one at a time, in order."""
         while True:
             sentence = await self._chunk_queue.get()
             try:
-                await self.tts.speak(sentence)
+                await self._play_through_robot(sentence)
             except Exception:
                 logger.warning("Failed to speak streamed chunk %r", sentence, exc_info=True)
             finally:
@@ -311,9 +324,9 @@ class BerkyReachyRuntime:
             return
 
         if self._active_request_id is None:
+            self._end_thinking()  # real audio is about to start - hold the head still for it
             self._active_request_id = request_id
             self._streaming_active = True
-            self._stop_speaking_motion = self._start_speaking_motion()
             if self._chunk_worker_task is None or self._chunk_worker_task.done():
                 self._chunk_worker_task = asyncio.create_task(self._chunk_worker(), name="chunk-speaker")
 
@@ -332,9 +345,6 @@ class BerkyReachyRuntime:
             self._active_request_id = None
             await self._chunk_queue.join()
             self._streaming_active = False
-            if self._stop_speaking_motion is not None:
-                self._stop_speaking_motion()
-                self._stop_speaking_motion = None
 
     async def _on_agent_message(self, message: dict[str, Any]) -> None:
         """Speak one agent message.
@@ -355,11 +365,9 @@ class BerkyReachyRuntime:
             self._streamed_last_response = False
             return
 
-        stop_speaking = self._start_speaking_motion()
-        try:
-            await self.tts.speak_chunked(text)
-        finally:
-            stop_speaking()
+        self._end_thinking()  # real audio is about to start - hold the head still for it
+        for chunk in split_into_speech_sentences(text):
+            await self._play_through_robot(chunk)
 
     def _start_motion(self) -> None:
         try:
@@ -374,6 +382,7 @@ class BerkyReachyRuntime:
     async def run(self) -> None:
         """Run until interrupted."""
         self._start_motion()
+        self.robot.media.start_playing()
         await self.client.connect()
         if self.input_mode == "stdin":
             await self._run_stdin_transcripts()
@@ -392,6 +401,8 @@ class BerkyReachyRuntime:
 
                 transcript = await self.transcriber.accept(input_sample_rate, frame)
                 if transcript:
+                    if contains_wake_phrase(transcript, config.BERKY_WAKE_PHRASE or ""):
+                        self._begin_thinking()
                     await self.client.send_transcript(
                         transcript,
                         final=True,
@@ -418,6 +429,8 @@ class BerkyReachyRuntime:
                 if text in {"/quit", "/exit"}:
                     self.stop_event.set()
                     break
+                if contains_wake_phrase(text, config.BERKY_WAKE_PHRASE or ""):
+                    self._begin_thinking()
                 await self.client.send_transcript(text, final=True)
         finally:
             await self.shutdown()
@@ -429,6 +442,11 @@ class BerkyReachyRuntime:
             self.robot.media.stop_recording()
         except Exception:
             logger.debug("Error stopping recording", exc_info=True)
+
+        try:
+            self.robot.media.stop_playing()
+        except Exception:
+            logger.debug("Error stopping playback", exc_info=True)
 
         if self._chunk_worker_task is not None and not self._chunk_worker_task.done():
             self._chunk_worker_task.cancel()

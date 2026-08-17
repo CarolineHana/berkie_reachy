@@ -61,7 +61,7 @@ def _compute_response_cost(usage: Any) -> float:
     return cost
 
 
-def _contains_wake_phrase(transcript: str, wake_phrase: str) -> bool:
+def contains_wake_phrase(transcript: str, wake_phrase: str) -> bool:
     """Return True if transcript contains the wake phrase (fuzzy, case-insensitive)."""
     if not wake_phrase:
         return True  # no wake phrase configured — always respond
@@ -599,7 +599,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         await self.output_queue.put(AdditionalOutputs({"role": "user", "content": event.transcript}))
 
                         # Wake phrase gate — only respond when addressed
-                        if _contains_wake_phrase(event.transcript, config.BERKY_WAKE_PHRASE or ""):
+                        if contains_wake_phrase(event.transcript, config.BERKY_WAKE_PHRASE or ""):
                             logger.info("Wake phrase detected — generating response")
                             self.last_activity_time = asyncio.get_event_loop().time()
                             await self._safe_response_create()
