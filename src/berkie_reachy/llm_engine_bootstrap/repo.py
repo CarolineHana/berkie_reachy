@@ -11,6 +11,7 @@ first time the app runs there.
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 from pathlib import Path
 
@@ -46,11 +47,34 @@ def _run(cmd: list[str], *, cwd: Path | None = None) -> str:
     return result.stdout
 
 
+def _new_file_paths(patch_text: str) -> list[str]:
+    """Return paths the patch creates via 'new file mode' hunks."""
+    paths = []
+    lines = patch_text.splitlines()
+    for i, line in enumerate(lines):
+        match = re.match(r"diff --git a/.+ b/(.+)", line)
+        if match and i + 1 < len(lines) and lines[i + 1].startswith("new file mode"):
+            paths.append(match.group(1))
+    return paths
+
+
 def _apply_tuning_patch(src_dir: Path) -> None:
     """Apply the small wake-phrase/recursion-limit tuning patch, if not already applied."""
     if not _TUNING_PATCH.exists():
         logger.warning("Tuning patch not found at %s; skipping", _TUNING_PATCH)
         return
+
+    # `git reset --hard` (just run by the caller) only resets TRACKED files, so an
+    # untracked leftover from a previous successful apply of this same patch's new-file
+    # hunks survives it - `git apply` then refuses to recreate it ("already exists in
+    # working directory"), which fails the check for the WHOLE patch and silently drops
+    # every other fix too. Confirmed live. Clearing these first makes re-applying the
+    # patch idempotent regardless of what survived the reset.
+    for rel_path in _new_file_paths(_TUNING_PATCH.read_text()):
+        stale = src_dir / rel_path
+        if stale.exists():
+            stale.unlink()
+
     check = subprocess.run(
         ["git", "apply", "--check", "--reverse", str(_TUNING_PATCH)],
         cwd=str(src_dir),
