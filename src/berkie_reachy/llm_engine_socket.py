@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 JsonDict = dict[str, Any]
 AgentMessageCallback = Callable[[JsonDict], Awaitable[None]]
+# (requestId, text, done) - one incremental sentence of a still-generating agent answer, or a
+# final (text="", done=True) marker. See llm_engine's llmChain.ts streamAgentAndReportChunks.
+AnswerChunkCallback = Callable[[str, str, bool], Awaitable[None]]
 
 
 def _strip(value: object) -> str:
@@ -98,6 +101,12 @@ def _transcript_channel() -> dict[str, str]:
 # still finishes before the previous token actually expires.
 _TOKEN_REFRESH_MARGIN_SECONDS = 5 * 60
 
+# LLM Engine auto-stops a conversation after 5 minutes with no transcript-channel
+# activity (deactivating every agent on it - see _keepalive_loop below). A real voice
+# assistant has idle gaps far longer than that as a matter of course, so re-arm the
+# conversation comfortably before that timeout can ever fire.
+_KEEPALIVE_INTERVAL_SECONDS = 4 * 60
+
 
 @dataclass(frozen=True)
 class AuthSession:
@@ -111,13 +120,19 @@ class AuthSession:
 class LLMEngineSocketClient:
     """Thin client over LLM Engine's existing Socket.IO message API."""
 
-    def __init__(self, *, on_agent_message: AgentMessageCallback) -> None:
+    def __init__(
+        self,
+        *,
+        on_agent_message: AgentMessageCallback,
+        on_answer_chunk: AnswerChunkCallback | None = None,
+    ) -> None:
         try:
             import socketio
         except ImportError as exc:
             raise RuntimeError("Install python-socketio to use the Berky LLM Engine socket client.") from exc
 
         self.on_agent_message = on_agent_message
+        self.on_answer_chunk = on_answer_chunk
         self.session: AuthSession | None = None
         self.sio = socketio.AsyncClient(
             reconnection=True,
@@ -127,6 +142,7 @@ class LLMEngineSocketClient:
         self._connected = asyncio.Event()
         self._initial_connect_done = False
         self._refresh_task: asyncio.Task[None] | None = None
+        self._keepalive_task: asyncio.Task[None] | None = None
         self._register_handlers()
 
     def _register_handlers(self) -> None:
@@ -147,6 +163,16 @@ class LLMEngineSocketClient:
             if not self._is_relevant_agent_message(message):
                 return
             await self.on_agent_message(message)
+
+        @self.sio.on("berky:answer_chunk")
+        async def answer_chunk(data: JsonDict) -> None:
+            if self.on_answer_chunk is None:
+                return
+            request_id = data.get("requestId")
+            if not isinstance(request_id, str) or not request_id:
+                return
+            text = data.get("text")
+            await self.on_answer_chunk(request_id, text if isinstance(text, str) else "", bool(data.get("done")))
 
         @self.sio.on("error")
         async def error(data: JsonDict) -> None:
@@ -232,6 +258,8 @@ class LLMEngineSocketClient:
 
         if self._refresh_task is None or self._refresh_task.done():
             self._refresh_task = asyncio.create_task(self._refresh_loop())
+        if self._keepalive_task is None or self._keepalive_task.done():
+            self._keepalive_task = asyncio.create_task(self._keepalive_loop())
 
     async def _refresh_loop(self) -> None:
         """Re-authenticate before the access token expires.
@@ -273,6 +301,39 @@ class LLMEngineSocketClient:
         except asyncio.CancelledError:
             pass
 
+    async def _keep_conversation_active(self) -> None:
+        """Re-arm the conversation via LLM Engine's start endpoint, if it isn't already active.
+
+        LLM Engine auto-stops a conversation - deactivating every agent on it - after 5
+        minutes with no transcript-channel message, and nothing reactivates it automatically:
+        not `conversation:join`, not `message:create`. Messages sent afterward still get
+        persisted (this looks like it's working), but no agent ever evaluates them again -
+        Berky silently stops responding to "hey Berkie" forever, with no error anywhere,
+        after any 5-minute gap in speech. Confirmed live. `start` is idempotent (a no-op if
+        already active), so calling this on a fixed cadence is safe.
+        """
+        if self.session is None:
+            return
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    _api_url(f"conversations/{config.BERKIE_LLM_ENGINE_CONVERSATION_ID}/start"),
+                    headers={"Authorization": f"Bearer {self.session.token}"},
+                )
+                if response.status_code >= 400:
+                    logger.warning("Failed to keep conversation active: %s", _error_text(response))
+        except httpx.HTTPError:
+            logger.warning("Failed to keep conversation active (network error); will retry shortly")
+
+    async def _keepalive_loop(self) -> None:
+        """Call _keep_conversation_active on a fixed cadence for as long as this client is alive."""
+        try:
+            while True:
+                await self._keep_conversation_active()
+                await asyncio.sleep(_KEEPALIVE_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            pass
+
     async def join_conversation(self) -> None:
         """Join transcript and response rooms for the configured conversation."""
         if self.session is None:
@@ -304,15 +365,8 @@ class LLMEngineSocketClient:
         *,
         final: bool = True,
         speaker: str | None = None,
-        channel: str | None = None,
     ) -> None:
-        """Send one transcript message to LLM Engine.
-
-        Posts to the usual transcript channel (triggers voiceAssistant) unless
-        ``channel`` names a different one already joined via
-        ``BERKY_RESPONSE_CHANNELS`` (e.g. "historian", to trigger eventHistorian
-        instead) - see transcript_routing.classify_channel.
-        """
+        """Send one transcript message to LLM Engine on the transcript channel."""
         if self.session is None:
             raise RuntimeError("Cannot send transcript before connect().")
 
@@ -332,8 +386,6 @@ class LLMEngineSocketClient:
         if speaker:
             source["speaker"] = speaker
 
-        target_channel = [{"name": channel}] if channel else [_transcript_channel()]
-
         payload = {
             "token": self.session.token,
             "userId": self.session.user_id,
@@ -342,7 +394,7 @@ class LLMEngineSocketClient:
                 "body": clean_text,
                 "bodyType": "text",
                 "conversation": config.BERKIE_LLM_ENGINE_CONVERSATION_ID,
-                "channels": target_channel,
+                "channels": [_transcript_channel()],
                 "source": source,
             },
         }
@@ -353,6 +405,9 @@ class LLMEngineSocketClient:
         if self._refresh_task is not None:
             self._refresh_task.cancel()
             self._refresh_task = None
+        if self._keepalive_task is not None:
+            self._keepalive_task.cancel()
+            self._keepalive_task = None
         if self.sio.connected:
             await self.sio.disconnect()
 
@@ -360,7 +415,7 @@ class LLMEngineSocketClient:
         if not message.get("fromAgent"):
             return False
 
-        # voiceAssistant posts JSON body with source='voice'.
+        # reachyLiveAgent posts JSON body with source='voice'.
         # Filter to only those so Reachy doesn't speak check-ins, intros, etc.
         body = message.get("body")
         if message.get("bodyType") == "json" and isinstance(body, dict):

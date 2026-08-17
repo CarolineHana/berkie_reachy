@@ -37,7 +37,7 @@ import time
 import logging
 import threading
 from queue import Empty, Queue
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, Callable, Optional
 from collections import deque
 from dataclasses import dataclass
 
@@ -218,6 +218,81 @@ class LoopFrequencyStats:
         self.m2 = 0.0
         self.min_freq = float("inf")
         self.count = 0
+
+
+def start_thinking_motion(movement_manager: Optional["MovementManager"]) -> Callable[[], None]:
+    """Trace a subtle "jackson square" with the head via set_speech_offsets.
+
+    Shared by berky_reachy.py and berky_live.py: movement should happen while Berkie is
+    silently "thinking" (between a wake question being sent and the first audio actually
+    playing), then hold still for the spoken answer itself - previously this same motion ran
+    the other way around (during speech), which is what's being inverted here.
+
+    Modeled on the reachy_mini_dances_library "jackson_square" preloaded dance: that move
+    traces its rectangle via head *translation* in the y/z plane (not pitch/roll rotation).
+    This reuses that same y/z translation mechanism at a much smaller scale, with eased
+    (ease-in-out) corner-to-corner transitions rather than that dance's sharp snap-twitches,
+    so it reads as a gentle, subtle thinking cue rather than a dance move.
+
+    Returns a stop() callable the caller must invoke once real audio starts (or if no
+    response ever arrives - see each caller's watchdog timeout). No-ops safely if
+    movement_manager is None.
+    """
+    if movement_manager is None:
+        return lambda: None
+
+    stop_event = threading.Event()
+
+    def _loop() -> None:
+        # Square "radius" ~0.8cm of head translation. Each corner-to-corner transition eases
+        # smoothly in and out rather than snapping, with a short settle at each corner -
+        # one full lap every ~3.2s.
+        SQUARE_AMP = 0.008  # metres
+        MOVE_DURATION = 0.7
+        HOLD_DURATION = 0.1
+        SEGMENT_DURATION = MOVE_DURATION + HOLD_DURATION
+        # (y, z) corners, visited in order: top-right, top-left, bottom-left, bottom-right.
+        CORNERS = (
+            (SQUARE_AMP, SQUARE_AMP),
+            (-SQUARE_AMP, SQUARE_AMP),
+            (-SQUARE_AMP, -SQUARE_AMP),
+            (SQUARE_AMP, -SQUARE_AMP),
+        )
+        cycle_duration = SEGMENT_DURATION * len(CORNERS)
+        ZERO = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+        t0 = time.monotonic()
+        try:
+            while not stop_event.is_set():
+                t = (time.monotonic() - t0) % cycle_duration
+                segment_idx = int(t / SEGMENT_DURATION)
+                segment_t = t - segment_idx * SEGMENT_DURATION
+                start_y, start_z = CORNERS[segment_idx]
+                end_y, end_z = CORNERS[(segment_idx + 1) % len(CORNERS)]
+                linear_progress = min(1.0, segment_t / MOVE_DURATION)
+                # Cosine ease-in-out: gentle acceleration/deceleration instead of a snap.
+                move_progress = (1 - math.cos(math.pi * linear_progress)) / 2
+                y = start_y + (end_y - start_y) * move_progress
+                z = start_z + (end_z - start_z) * move_progress
+                try:
+                    movement_manager.set_speech_offsets((0.0, y, z, 0.0, 0.0, 0.0))
+                except Exception:
+                    break
+                time.sleep(0.02)  # ~50 Hz update rate
+        finally:
+            try:
+                movement_manager.set_speech_offsets(ZERO)
+            except Exception:
+                pass
+
+    thread = threading.Thread(target=_loop, daemon=True)
+    thread.start()
+
+    def stop() -> None:
+        stop_event.set()
+        thread.join(timeout=0.5)
+
+    return stop
 
 
 class MovementManager:

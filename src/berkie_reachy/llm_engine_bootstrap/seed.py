@@ -22,18 +22,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_AGENT_CONFIG = {
     "botName": "Berkie",
     "personality": "sarcastic-expert",
-    "tools": ["web_search"],
     "recentTranscriptTurns": 20,
-    # Gives the assistant the eventHistorian's event_history tools, scoped to
-    # this conversation's own topic - lets Berkie search/reference its own
-    # past event transcripts (see eventQuestionHandler.ts's `series` gate).
-    "seriesHistory": True,
 }
 DEFAULT_LLM_PLATFORM = "bedrock"
 DEFAULT_LLM_MODEL = "us.anthropic.claude-opus-4-6-v1"
-# eventHistorian's trigger/response channel is hardcoded upstream
-# (defaultTriggers.perMessage.channels) - must match exactly.
-HISTORIAN_CHANNEL = "historian"
 
 
 class SeedError(RuntimeError):
@@ -165,24 +157,15 @@ def ensure_seeded(
                 "channels": [
                     {"name": "transcript", "passcode": None},
                     {"name": "chat", "passcode": None},
-                    {"name": HISTORIAN_CHANNEL, "passcode": None},
                 ],
                 "agentTypes": [
                     {
-                        "name": "voiceAssistant",
+                        "name": "reachyLiveAgent",
                         "properties": {
-                            "agentConfig": DEFAULT_AGENT_CONFIG,
-                            "llmPlatform": DEFAULT_LLM_PLATFORM,
-                            "llmModel": DEFAULT_LLM_MODEL,
-                        },
-                    },
-                    {
-                        "name": "eventHistorian",
-                        "properties": {
-                            # Without topicIds, eventHistorian searches every
-                            # public topic system-wide - scope it to just this
+                            # Without topicIds, reachyLiveAgent's event-history tools search
+                            # every public topic system-wide - scope it to just this
                             # conversation's own event.
-                            "agentConfig": {"botName": "Berkie", "topicIds": [topic_id]},
+                            "agentConfig": {**DEFAULT_AGENT_CONFIG, "topicIds": [topic_id]},
                             "llmPlatform": DEFAULT_LLM_PLATFORM,
                             "llmModel": DEFAULT_LLM_MODEL,
                         },

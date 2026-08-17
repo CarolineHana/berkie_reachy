@@ -1,99 +1,326 @@
-diff --git a/.husky/prepare-commit-msg b/.husky/prepare-commit-msg
-index 693facc..8d98c38 100644
---- a/.husky/prepare-commit-msg
-+++ b/.husky/prepare-commit-msg
-@@ -8,10 +8,13 @@ else
-   # For non-interactive commits (using -m flag), check for breaking changes
-   echo "Non-interactive commit detected. Performing breaking changes check..."
-   
--  # Restore terminal input for the prompt
--  exec < /dev/tty
--  
--  read -p "Does this commit introduce breaking changes? (y/N): " breaking
-+  # Restore terminal input for the prompt; default to N if no TTY available
-+  if [ -t 0 ] || exec < /dev/tty 2>/dev/null; then
-+    read -p "Does this commit introduce breaking changes? (y/N): " breaking
-+  else
-+    breaking="N"
-+    echo "No TTY available — defaulting to no breaking changes."
-+  fi
-   
-   if [ "$breaking" = "y" ] || [ "$breaking" = "Y" ]; then
-     echo ""
-diff --git a/src/agents/eventAssistant/eventQuestionHandler.ts b/src/agents/eventAssistant/eventQuestionHandler.ts
-index 16dd10c..2f1cdcb 100644
---- a/src/agents/eventAssistant/eventQuestionHandler.ts
-+++ b/src/agents/eventAssistant/eventQuestionHandler.ts
-@@ -557,7 +557,7 @@ export async function answerQuestion(userMessage, conversationHistory, options?)
-     // Series history adds 3 tools (get_event_list, search_topic_transcripts, search_conversation_transcript);
-     // a full research workflow across past events consumes more LangGraph supersteps than the
-     // web-search-only case, so give more headroom when that feature is active.
--    const agentRecursionLimit = series ? 20 : 10
-+    const agentRecursionLimit = series ? 35 : 25
-     const agentBundle = (await getAgentStructuredResponse(
-       llm,
-       tools,
-diff --git a/src/agents/eventAssistant/voiceAssistant.ts b/src/agents/eventAssistant/voiceAssistant.ts
-index a732c20..210fd8b 100644
---- a/src/agents/eventAssistant/voiceAssistant.ts
-+++ b/src/agents/eventAssistant/voiceAssistant.ts
-@@ -1,4 +1,3 @@
--import * as fuzzball from 'fuzzball'
- import verify from '../helpers/verify.js'
- import { AgentMessageActions, ConversationHistory, IMessage } from '../../types/index.types.js'
- import { defaultLLMModel, defaultLLMPlatform } from '../helpers/getModelChat.js'
-@@ -8,18 +7,29 @@ import { matchBotMention, normalizeBotMention } from '../helpers/intentChecks.js
- import logger from '../../config/logger.js'
- import getDefaultEventAssistantToolNames from './eventAssistantDefaultTools.js'
+diff --git a/src/agents/helpers/bedrockGateway.ts b/src/agents/helpers/bedrockGateway.ts
+index ba199d0..8d76cf6 100644
+--- a/src/agents/helpers/bedrockGateway.ts
++++ b/src/agents/helpers/bedrockGateway.ts
+@@ -10,7 +10,8 @@ import { transformPayloadForClaude } from './claudeHandler.js'
+  * provider.
+  *
+  * The default targets an API-key gateway. It sends the native Bedrock InvokeModel request to
+- * `{BEDROCK_BASE_URL}/model/{modelId}/invoke` with an `x-api-key` header, and assumes the
++ * `{BEDROCK_BASE_URL}/model/{modelId}/invoke` (or `/invoke-with-response-stream`, mirroring
++ * whichever method BedrockChat itself requested) with an `x-api-key` header, and assumes the
+  * gateway signs the upstream AWS request (SigV4) on its side.
+  *
+  * If you call Amazon Bedrock directly, AWS requires SigV4-signed requests rather than an api
+@@ -22,8 +23,10 @@ import { transformPayloadForClaude } from './claudeHandler.js'
+ // cannot alter the URL path; the colon in dated ids is valid in a path segment and stays.
+ const BEDROCK_MODEL_ID_PATTERN = /^[A-Za-z0-9._:-]+$/
  
--const heyMatchThreshold = 85
--
- function matchHeyDirective(text: string, botName: string): { matched: boolean; question: string } {
-   // Split and scan all consecutive word pairs for "hey <botName>" anywhere in the message
-   const words = text.trim().split(/\s+/)
-   if (words.length < 2) return { matched: false, question: '' }
--  
--  for (let i = 0; i < words.length - 1; i++) {
--    const heyToken = words[i].replace(/[,!.]+$/, '')
--    const heyScore = fuzzball.ratio(heyToken.toLowerCase(), 'hey')
- 
--    if (heyScore >= heyMatchThreshold && matchBotMention(words, botName)) {
-+  for (let i = 0; i < words.length - 1; i++) {
-+    const heyToken = words[i].replace(/[,!.]+$/, '').toLowerCase()
++export type BedrockInvokeMethod = 'invoke' | 'invoke-with-response-stream'
 +
-+    // "hey" itself is checked for an EXACT match, not a fuzzy one - it's a
-+    // short, common, unambiguous word Whisper transcribes reliably (unlike
-+    // the made-up bot name, where fuzzy matching earns its keep). Fuzzy
-+    // matching "hey" backfired: fuzzball scores the ordinary word "they" at
-+    // 86 against "hey" (well above any reasonable threshold), so ANY
-+    // message containing "they"/"their" immediately followed by anything
-+    // resembling the bot name - including a garbled ASR mistranscription
-+    // with zero relation to an actual wake attempt - triggered a full
-+    // response. Confirmed live twice: "I haven't Berkie it" and "these
-+    // Berkie stumpy because they Berkie the only ones" (repeated ASR
-+    // hallucination of the bot name) both triggered responses though "hey
-+    // berkie" was never said. Only checking the word right after "hey" (an
-+    // earlier attempt at this fix) wasn't enough on its own, since "they"
-+    // can itself be immediately followed by a stray "Berkie" hallucination.
-+    if (heyToken === 'hey' && matchBotMention([words[i + 1]], botName)) {
-       const extracted = words
-         .slice(i + 2)
-         .join(' ')
-diff --git a/src/agents/helpers/intentChecks.ts b/src/agents/helpers/intentChecks.ts
-index f564bde..18d2fc1 100644
---- a/src/agents/helpers/intentChecks.ts
-+++ b/src/agents/helpers/intentChecks.ts
-@@ -7,7 +7,7 @@ const intentCheckSchema = z.object({
-   intended_for_bot: z.boolean()
- })
- 
--const nameMatchThreshold = 70
-+const nameMatchThreshold = 55
- 
  /**
-  * Checks if a message contains a mention of the bot, allowing for minor misspellings.
+- * Builds the Bedrock InvokeModel URL for a model: `{baseUrl}/model/{modelId}/invoke`.
++ * Builds the Bedrock InvokeModel URL for a model: `{baseUrl}/model/{modelId}/{method}`.
+  *
+  * `baseUrl` is everything up to the `/model` segment for your endpoint. For Amazon Bedrock
+  * that is the bedrock-runtime host; for a gateway it is the gateway base path. The model id
+@@ -33,13 +36,13 @@ const BEDROCK_MODEL_ID_PATTERN = /^[A-Za-z0-9._:-]+$/
+  *
+  * @throws if the model id contains characters that are not valid in a Bedrock model id.
+  */
+-export function buildBedrockInvokeUrl(baseUrl: string, modelId: string): string {
++export function buildBedrockInvokeUrl(baseUrl: string, modelId: string, method: BedrockInvokeMethod = 'invoke'): string {
+   if (!BEDROCK_MODEL_ID_PATTERN.test(modelId)) {
+     throw new Error(`Invalid Bedrock model id: "${modelId}"`)
+   }
+   // Drop any trailing slash on the base url so the path does not end up with a double slash.
+   const normalizedBaseUrl = baseUrl.replace(/\/+$/, '')
+-  return `${normalizedBaseUrl}/model/${modelId}/invoke`
++  return `${normalizedBaseUrl}/model/${modelId}/${method}`
+ }
+ 
+ const RETRYABLE_STATUS = new Set([429, 500, 502])
+@@ -48,7 +51,8 @@ const RETRY_BASE_DELAY_MS = 500
+ 
+ // Create a custom fetch function for Bedrock Claude or legacy LLM
+ export function createClaudeFetchFn(defaultLLMModel: string, defaultLLMPlatform: string) {
+-  return async function fetchFn(url: string, init: Parameters<typeof fetch>[1]) {
++  return async function fetchFn(rawUrl: string | URL | Request, init: Parameters<typeof fetch>[1]) {
++    const url = typeof rawUrl === 'string' ? rawUrl : rawUrl.toString()
+     let bodyContent: unknown = {}
+     if (init?.body) {
+       if (
+@@ -79,8 +83,16 @@ export function createClaudeFetchFn(defaultLLMModel: string, defaultLLMPlatform:
+         'x-api-key': config.llms.bedrock.key
+       }
+     }
+-    // Bedrock routes by model id in the path; buildBedrockInvokeUrl validates the id first.
+-    const invokeUrl = buildBedrockInvokeUrl(config.llms.bedrock.baseUrl, defaultLLMModel)
++    // BedrockChat._streamResponseChunks() builds its own request URL (targeting a direct
++    // AWS endpoint host we don't use) and calls this same fetchFn with it - only the method
++    // segment ("invoke" vs "invoke-with-response-stream") is meaningful to us, so mirror
++    // that against our own gateway base URL/model id rather than trusting the rest of it.
++    const isStreaming = url.includes('invoke-with-response-stream')
++    const invokeUrl = buildBedrockInvokeUrl(
++      config.llms.bedrock.baseUrl,
++      defaultLLMModel,
++      isStreaming ? 'invoke-with-response-stream' : 'invoke'
++    )
+ 
+     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+       try {
+@@ -101,7 +113,9 @@ export function createClaudeFetchFn(defaultLLMModel: string, defaultLLMPlatform:
+         }
+ 
+         const contentType = response.headers.get('content-type') || ''
+-        if (contentType.includes('application/json')) {
++        // AWS event-stream framing for invoke-with-response-stream - BedrockChat decodes
++        // the body itself, so pass the response through untouched (don't consume it here).
++        if (contentType.includes('application/json') || contentType.includes('application/vnd.amazon.eventstream')) {
+           return response
+         }
+         const responseText = await response.text()
+diff --git a/src/agents/helpers/llmChain.ts b/src/agents/helpers/llmChain.ts
+index 86cac55..9a6b970 100644
+--- a/src/agents/helpers/llmChain.ts
++++ b/src/agents/helpers/llmChain.ts
+@@ -11,11 +11,6 @@ import rag from './rag.js'
+ 
+ const RESPONSE_PLACEHOLDER = '(user sent an empty message)'
+ 
+-/* The model answered, but not in the shape the schema demands: a hollow or misshapen tool
+-   call, or prose where JSON belonged. Distinct from transport errors so callers can
+-   resample the model once instead of failing outright. */
+-class MalformedStructuredResponseError extends Error {}
+-
+ // Helper to determine if we should use structured output for a given LLM
+ function shouldUseStructuredOutput(llm): boolean {
+   // Skip structured output for Claude models to avoid tool calling issues
+@@ -307,7 +302,7 @@ function getStructuredResponseChain(llm, prompt, responseFormatSchema) {
+       if (rewrapped.success) return rewrapped.data
+     }
+ 
+-    throw new MalformedStructuredResponseError(`Structured response did not match schema: ${direct.error.message}`)
++    throw new Error(`Structured response did not match schema: ${direct.error.message}`)
+   }
+ 
+   // Convert Zod schema to JSON Schema and ensure it has type: 'object' for Bedrock compatibility
+@@ -340,18 +335,7 @@ function getStructuredResponseChain(llm, prompt, responseFormatSchema) {
+   // This matches LangChain's withStructuredOutput behavior
+   return prompt.pipe(llm.bindTools([toolSchema])).pipe(async (message) => {
+     // Extract tool call from AIMessage
+-    const aiMsg = message as {
+-      tool_calls?: Array<{ name: string; args: unknown; id?: string }>
+-      content?: unknown
+-      response_metadata?: { stop_reason?: string }
+-    }
+-
+-    /* A response cut off at the token cap still arrives as a tool call, but with only the
+-       fields written before the cutoff, so parsing it reports whatever field went missing
+-       rather than the truncation that caused it. Name the real cause instead. */
+-    if (aiMsg.response_metadata?.stop_reason === 'max_tokens') {
+-      throw new Error('Model response was cut off at the max_tokens cap, so the structured payload is incomplete.')
+-    }
++    const aiMsg = message as { tool_calls?: Array<{ name: string; args: unknown; id?: string }>; content?: unknown }
+ 
+     const structuredResponseCall = aiMsg.tool_calls?.find((tc) => tc.name === 'structured_response')
+ 
+@@ -370,7 +354,7 @@ function getStructuredResponseChain(llm, prompt, responseFormatSchema) {
+     }
+ 
+     if (!text) {
+-      throw new MalformedStructuredResponseError('No tool calls found in the response and no text content to parse.')
++      throw new Error('No tool calls found in the response and no text content to parse.')
+     }
+ 
+     let parsed: unknown
+@@ -381,9 +365,7 @@ function getStructuredResponseChain(llm, prompt, responseFormatSchema) {
+         .trim()
+       parsed = JSON.parse(stripped)
+     } catch {
+-      throw new MalformedStructuredResponseError(
+-        'No tool calls found in the response and content was not parseable as JSON.'
+-      )
++      throw new Error('No tool calls found in the response and content was not parseable as JSON.')
+     }
+ 
+     logger.debug('llmChain: no tool call found — parsed content as JSON fallback')
+@@ -467,19 +449,7 @@ async function getChatPromptResponse(
+ 
+   const invokeParams = { ...inputParams }
+ 
+-  if (!structuredOutputSchema) return chain.invoke(invokeParams)
+-
+-  /* A structured call can fail because the model shaped its answer wrong (hollow tool
+-     call, prose instead of JSON) even though the request itself was fine. One fresh
+-     sample usually fixes that, so resample once before giving up. Transport errors are
+-     not retried here; the model client handles those. */
+-  try {
+-    return await chain.invoke(invokeParams)
+-  } catch (error: unknown) {
+-    if (!(error instanceof MalformedStructuredResponseError)) throw error
+-    logger.warn(`llmChain: structured response was malformed, retrying once: ${error.message}`)
+-    return chain.invoke(invokeParams)
+-  }
++  return chain.invoke(invokeParams)
+   // You can do this if you want detailed logging:
+   // return chain.invoke(invokeParams, { callbacks: [new ConsoleCallbackHandler()] })
+ }
+@@ -582,6 +552,127 @@ async function getRAGAugmentedResponse(
+  *
+ 
+  */
++/** Extracts the plain text of a streamed chat model chunk's content (string or content-block array). */
++function extractChunkText(content: unknown): string {
++  if (typeof content === 'string') return content
++  if (Array.isArray(content)) {
++    return content.map((c) => (typeof c?.text === 'string' ? c.text : '')).join('')
++  }
++  return ''
++}
++
++/**
++ * Splits accumulated streamed text into complete sentences, returning whatever trailing
++ * partial sentence hasn't been terminated yet as the remainder to keep accumulating.
++ *
++ * Uses a lazy match up to a terminator-followed-by-whitespace-or-end, rather than
++ * prohibiting the sentence body from containing any '.'/'!'/'?' at all - the latter
++ * (an earlier version of this function) cannot span an embedded, non-terminal period
++ * (e.g. "cyber.harvard.edu" in a URL): the regex engine skips ahead past it looking for
++ * a position where the *next* attempt succeeds, and since sentences[] only records the
++ * matched text while remainder is computed from matches[].join('').length - a length,
++ * not an actual string position - the slice desyncs from where matching truly started.
++ * Confirmed live: this produced repeated garbled fragments ("edu/about))." emitted a
++ * dozen times) whenever a response contained a markdown link with a dotted domain.
++ */
++function extractCompleteSentences(text: string): { sentences: string[]; remainder: string } {
++  const pattern = /.*?[.!?](?=\s|$)/gs
++  const sentences: string[] = []
++  let lastEnd = 0
++  for (;;) {
++    const match = pattern.exec(text)
++    if (match === null) break
++    const trimmed = match[0].trim()
++    if (trimmed) sentences.push(trimmed)
++    lastEnd = pattern.lastIndex
++    if (match[0].length === 0) pattern.lastIndex += 1
++  }
++  return { sentences, remainder: text.slice(lastEnd) }
++}
++
++/**
++ * Runs the agent via streamEvents() instead of invoke(), reporting each complete sentence
++ * of the answer to onChunk as soon as it's safe to speak - so a caller (e.g. a voice client)
++ * can start speaking before the whole response finishes.
++ *
++ * Two phases, split on whether a tool has actually been called yet:
++ *
++ * - Before any tool call: Berkie's system prompt mandates calling web_search when uncertain,
++ *   and Claude sometimes narrates ("Let me check...") *within the same turn* that goes on to
++ *   call that tool - confirmed live (repeatedly): a couple of sentences would get spoken, then
++ *   a long pause for the search, then a *different*, unrelated final answer. Since a turn's own
++ *   streamed chunks don't reveal in advance whether it will end up calling a tool, this phase
++ *   buffers each turn's text by run_id and only speaks it once that turn's on_chat_model_end
++ *   confirms it made no tool calls - narration attached to a real tool call is discarded, never
++ *   spoken.
++ * - After the first tool call: the model is generating its answer from research already in
++ *   hand and reliably doesn't mix in further narration before another tool call, so this phase
++ *   speaks sentences immediately as they stream - the actual latency win, since this is
++ *   typically the longest part of the response.
++ *
++ * Returns the same {messages: [...]} graph state agent.invoke() would have returned, so the
++ * caller's existing post-processing (createAgentOutputChain) is unaffected.
++ */
++async function streamAgentAndReportChunks(agent, messages, recursionLimit: number, onChunk: (text: string) => void) {
++  const stream = agent.streamEvents({ messages }, { version: 'v2', recursionLimit })
++  const pendingByRun = new Map<string, string>()
++  let toolCalledOnce = false
++  let liveBuffer = ''
++  // eslint-disable-next-line @typescript-eslint/no-explicit-any
++  let finalState: any = null
++
++  for await (const event of stream) {
++    if (event.event === 'on_tool_start') {
++      toolCalledOnce = true
++      pendingByRun.delete(event.run_id)
++      liveBuffer = ''
++      continue
++    }
++    if (event.event === 'on_chat_model_stream') {
++      const chunk = event.data?.chunk
++      const toolCallChunks = chunk?.tool_call_chunks
++      if (Array.isArray(toolCallChunks) && toolCallChunks.length > 0) continue
++
++      const textPiece = extractChunkText(chunk?.content)
++      if (!textPiece) continue
++
++      if (toolCalledOnce) {
++        liveBuffer += textPiece
++        const { sentences, remainder } = extractCompleteSentences(liveBuffer)
++        liveBuffer = remainder
++        for (const sentence of sentences) onChunk(sentence)
++      } else {
++        pendingByRun.set(event.run_id, (pendingByRun.get(event.run_id) || '') + textPiece)
++      }
++      continue
++    }
++    if (event.event === 'on_chat_model_end' && !toolCalledOnce) {
++      const buffered = pendingByRun.get(event.run_id)
++      pendingByRun.delete(event.run_id)
++      if (!buffered) continue
++      const toolCalls = event.data?.output?.tool_calls
++      const calledTool = Array.isArray(toolCalls) && toolCalls.length > 0
++      if (calledTool) continue // narration attached to a real tool call - never spoken
++      const { sentences, remainder } = extractCompleteSentences(buffered)
++      for (const sentence of sentences) onChunk(sentence)
++      const trailing = remainder.trim()
++      if (trailing) onChunk(trailing)
++      continue
++    }
++    if (event.event === 'on_chain_end' && event.name === 'LangGraph') {
++      finalState = event.data?.output
++    }
++  }
++
++  const trailing = liveBuffer.trim()
++  if (trailing) onChunk(trailing)
++
++  if (!finalState) {
++    throw new Error('Streaming agent run ended without a final LangGraph state')
++  }
++  return finalState
++}
++
+ async function getAgentStructuredResponse(
+   llm,
+   tools,
+@@ -590,7 +681,7 @@ async function getAgentStructuredResponse(
+   responseSchema?,
+   chatHistory?,
+   recursionLimit = 20,
+-  options?: { returnToolTrace?: boolean }
++  options?: { returnToolTrace?: boolean; onChunk?: (text: string) => void }
+ ) {
+   // Add format instructions to system prompt if schema is provided
+   let finalSystemPrompt = systemPrompt
+@@ -618,12 +709,9 @@ ${parser.getFormatInstructions()}`
+     { role: 'user', content: userMessage }
+   ]
+ 
+-  const agentResult = await agent.invoke(
+-    {
+-      messages
+-    },
+-    { recursionLimit }
+-  )
++  const agentResult = options?.onChunk
++    ? await streamAgentAndReportChunks(agent, messages, recursionLimit, options.onChunk)
++    : await agent.invoke({ messages }, { recursionLimit })
+ 
+   const wantTrace = options?.returnToolTrace === true && responseSchema == null
+   const toolTrace = wantTrace ? extractToolCallTraceFromAgentResult(agentResult) : undefined
 diff --git a/src/agents/helpers/llmInputFormatters.ts b/src/agents/helpers/llmInputFormatters.ts
-index 1504332..174fdeb 100644
+index 1504332..9749458 100644
 --- a/src/agents/helpers/llmInputFormatters.ts
 +++ b/src/agents/helpers/llmInputFormatters.ts
 @@ -12,7 +12,16 @@ function formatTime(date, timezone = 'UTC') {
@@ -114,3 +341,402 @@ index 1504332..174fdeb 100644
  }
  
  function formatTranscript(messages, timezone = 'UTC') {
+@@ -81,7 +90,9 @@ function extractMessageText(message: IMessage) {
+       return `${body.text}\n[Poll: "${body.title}"]\nChoices:\n${choiceList}`
+     }
+     if (!body?.text) {
+-      logger.warn(`Message with ID ${message._id} has bodyType '${message.bodyType}' but no 'text' property. Defaulting to empty string.`)
++      logger.warn(
++        `Message with ID ${message._id} has bodyType '${message.bodyType}' but no 'text' property. Defaulting to empty string.`
++      )
+       return ''
+     }
+     return body.text as string
+diff --git a/src/agents/index.ts b/src/agents/index.ts
+index 3a61a4c..cea0deb 100644
+--- a/src/agents/index.ts
++++ b/src/agents/index.ts
+@@ -11,7 +11,6 @@ import eventHistorian from './eventHistorian/eventHistorian.js'
+ import eventSetup from './eventSetup/eventSetup.js'
+ import vibesAnalyst from './vibesAnalyst/index.js'
+ import numberCruncher from './numberCruncher/agent.js'
+-import scorekeeper from './scorekeeper/agent.js'
+ 
+ // Development agents
+ import civilityPerMessage from './development/civilityPerMessage.js'
+@@ -26,6 +25,7 @@ import experts from './development/experts/index.js'
+ import generic from './development/generic/index.js'
+ import config from '../config/config.js'
+ import voiceAssistant from './eventAssistant/voiceAssistant.js'
++import reachyLiveAgent from './reachyLive/reachyLiveAgent.js'
+ import logger from '../config/logger.js'
+ 
+ const development = {
+@@ -50,12 +50,12 @@ const agentTypes = {
+   moderatorNotifier,
+   jargonFilterAgent,
+   voiceAssistant,
++  reachyLiveAgent,
+   librarian,
+   eventHistorian,
+   eventSetup,
+   vibesAnalyst,
+-  numberCruncher,
+-  scorekeeper
++  numberCruncher
+ }
+ 
+ for (const [key, agentType] of Object.entries(agentTypes)) {
+diff --git a/src/agents/reachyLive/reachyLiveAgent.ts b/src/agents/reachyLive/reachyLiveAgent.ts
+new file mode 100644
+index 0000000..62b7874
+--- /dev/null
++++ b/src/agents/reachyLive/reachyLiveAgent.ts
+@@ -0,0 +1,303 @@
++import type { StructuredToolInterface } from '@langchain/core/tools'
++import verify from '../helpers/verify.js'
++import { AgentMessageActions, ConversationHistory, IMessage } from '../../types/index.types.js'
++import { defaultLLMModel, defaultLLMPlatform } from '../helpers/getModelChat.js'
++import { extractMessageText } from '../helpers/slashCommandParser.js'
++import { matchBotMention, normalizeBotMention } from '../helpers/intentChecks.js'
++import { composeSystemPrompt } from '../helpers/promptComposer.js'
++import { getAgentStructuredResponse } from '../helpers/llmChain.js'
++import { formatMultiUserConversationHistory } from '../helpers/llmInputFormatters.js'
++import { getTools } from '../tools/registry.js'
++import { TopicRef, buildEventHistoryToolsPrompt } from '../tools/eventHistory.js'
++import { bkcArchiveWikiTools, buildArchiveWikiToolsPrompt } from '../tools/bkcArchiveWiki.js'
++import Topic from '../../models/topic.model.js'
++import config from '../../config/config.js'
++import logger from '../../config/logger.js'
++import websocketGateway from '../../websockets/websocketGateway.js'
++
++/**
++ * Consolidates the old voiceAssistant + eventHistorian split into one agent, exclusively for
++ * Berkie/Reachy's own conversation (created directly via agentTypes, not a shared
++ * conversationType - see llm_engine_bootstrap/seed.py). That split caused every voice question
++ * to get answered twice: llm_engine's message dispatcher never actually enforces
++ * defaultTriggers.perMessage.channels (it's inert metadata - see message.service.ts), so both
++ * agents independently gated on the SAME message via their own text-based heuristics and both
++ * responded. One agent with one gate and every tool means exactly one spoken answer.
++ *
++ * The system prompt below is written for TEXT-TO-SPEECH, not chat display - no Markdown, no
++ * URLs, short answers - since eventQuestionHandler.ts's shared prompts (reused by the web chat)
++ * explicitly instruct citing sources with Markdown links, which is unusable read aloud by a
++ * robot.
++ */
++
++const BASE_SYSTEM_PROMPT = `You are {botName}, a voice assistant physically present at Berkman Klein Center (BKC) events. You answer questions out loud, spoken through a robot's speaker to a live audience - not displayed as text.
++
++**How to speak:**
++- Never use Markdown, headers, bullet points, or asterisks - write only plain spoken sentences, exactly as you'd say them out loud.
++- Keep answers short: 1-4 sentences for most questions. Only go longer if the question explicitly asks for more detail (e.g. "give me a few sentences about...").
++- Never say a URL, link, file path, or ID out loud. When citing a source, name it naturally in the sentence instead (e.g. "according to an article from The Harvard Gazette" or "based on the event's own transcript") - never read out the address or identifier itself.
++- Don't narrate what you're about to do ("Let me check that") - search first, then answer once you have the information.
++- Match the tone of a knowledgeable person casually answering a question at an event, not a written report.
++
++**Your tools:**
++${buildEventHistoryToolsPrompt(true)}
++${bkcArchiveWikiTools.length > 0 ? `\n\n${buildArchiveWikiToolsPrompt()}` : ''}
++
++Use event-history search for questions about past BKC events, what was discussed, or who spoke.${
++  bkcArchiveWikiTools.length > 0
++    ? " Use the archive for BKC's people, projects, and history more broadly - before or beyond what's in event transcripts."
++    : ''
++} Use web search only for general knowledge outside BKC's own material. Search efficiently: one or two tool calls usually suffice, and never repeat near-identical queries.
++
++Regardless of any citation format mentioned above: never include a URL, link, or raw ID in your spoken answer. Cite sources by name and date only.
++{topicContext}`
++
++function buildTopicContext(topics: TopicRef[]): string {
++  if (topics.length === 0) return ''
++  const lines = topics.map((t) => {
++    const desc = t.description ? `: ${t.description}` : ''
++    return `- "${t.name}" (id: ${t.id})${desc}`
++  })
++  return `\n\n**Available event series:**\n${lines.join('\n')}`
++}
++
++function matchHeyDirective(text: string, botName: string): { matched: boolean; question: string } {
++  // Split and scan all consecutive word pairs for "hey <botName>" anywhere in the message
++  const words = text.trim().split(/\s+/)
++  if (words.length < 2) return { matched: false, question: '' }
++
++  for (let i = 0; i < words.length - 1; i++) {
++    const heyToken = words[i].replace(/[,!.]+$/, '').toLowerCase()
++
++    // "hey" itself is checked for an EXACT match, not a fuzzy one - it's a short, common,
++    // unambiguous word Whisper transcribes reliably (unlike the made-up bot name, where fuzzy
++    // matching earns its keep). Fuzzy matching "hey" backfired in an earlier design: fuzzball
++    // scores the ordinary word "they" at 86 against "hey" (well above any reasonable threshold),
++    // so ANY message containing "they"/"their" immediately followed by anything resembling the
++    // bot name - including a garbled ASR mistranscription with zero relation to an actual wake
++    // attempt - triggered a full response.
++    if (heyToken === 'hey' && matchBotMention([words[i + 1]], botName)) {
++      const extracted = words
++        .slice(i + 2)
++        .join(' ')
++        .trim()
++      const question = extracted.charAt(0).toUpperCase() + extracted.slice(1)
++      return { matched: true, question }
++    }
++  }
++
++  return { matched: false, question: '' }
++}
++
++// Returns the extracted question text if the agent should respond, or null otherwise.
++// Called from both evaluate (to gate) and respond (to extract the question), since respond runs
++// asynchronously in a job with a freshly loaded agent and cannot rely on in-memory state from evaluate.
++function extractVoiceQuestion(userMessage, conversationMessages, botName: string) {
++  const messageText = extractMessageText(userMessage)
++  const { matched, question } = matchHeyDirective(messageText, botName)
++
++  if (matched && question) return question
++  if (matched && !question) return null // bare trigger, wait for next message
++
++  // No trigger in current message — check if the previous transcript message was a bare "hey botName"
++  const prevTranscriptMessage = [...conversationMessages]
++    .reverse()
++    .find((msg) => msg.channels?.some((c) => c === 'transcript'))
++  if (prevTranscriptMessage) {
++    const prevText = extractMessageText(prevTranscriptMessage)
++    const prev = matchHeyDirective(prevText, botName)
++    if (prev.matched && !prev.question) return messageText
++  }
++
++  return null
++}
++
++export default verify({
++  name: 'Reachy Live Agent',
++  description:
++    'Listens for voice activations on the transcript channel and answers questions about BKC events, ' +
++    'the BKC archive, and general knowledge - spoken aloud through the Reachy robot.',
++  priority: 100,
++  maxTokens: 2000,
++  defaultTriggers: {
++    perMessage: { channels: ['transcript'] }
++  },
++  agentConfig: {
++    botName: 'Berkie',
++    personality: 'sarcastic-expert',
++    topicIds: [] as string[]
++  },
++  llmTemplateVars: {
++    user: [{ name: 'question', description: 'The user message or question' }]
++  },
++  defaultLLMTemplates: {
++    user: '## Question:\n{question}'
++  },
++  defaultLLMPlatform,
++  defaultLLMModel,
++  ragCollectionName: undefined,
++  // Include 'chat' alongside 'transcript': this agent's own answers are posted to the chat
++  // channel (see the `channels: [chatChannel]` response below), so 'transcript' alone would
++  // only ever surface the user's past questions, never Berkie's own past answers - confirmed
++  // live: asked to recall something it said minutes earlier, it fabricated a different answer,
++  // then denied having said anything at all, because its own prior turns were invisible to it.
++  defaultConversationHistorySettings: { count: 20, channels: ['transcript', 'chat'] },
++  parseOutput: (msg) => {
++    if (msg.bodyType !== 'json' || msg.body?.source !== 'voice') {
++      return msg
++    }
++    const translatedMsg = msg.toObject()
++    const sourceMessage = msg.body.sourceMessage as string
++    const truncated = sourceMessage.length > 40 ? `${sourceMessage.slice(0, 40)}...` : sourceMessage
++    translatedMsg.bodyType = 'text'
++    translatedMsg.body = `🔊 "${truncated}"\n${msg.body.text}`
++    return translatedMsg
++  },
++
++  async evaluate(userMessage) {
++    const botName = this.agentConfig.botName as string
++    const questionText = extractVoiceQuestion(userMessage, this.conversation.messages as Array<IMessage>, botName)
++
++    if (questionText) {
++      logger.debug(`Reachy live trigger matched, question: "${questionText}"`)
++      const modifiedMessage = { ...userMessage, body: normalizeBotMention(userMessage.body, botName, false) }
++      return {
++        userMessage: modifiedMessage,
++        action: AgentMessageActions.CONTRIBUTE,
++        userContributionVisible: true,
++        suggestion: undefined
++      }
++    }
++
++    const messageText = extractMessageText(userMessage)
++    const { matched } = matchHeyDirective(messageText, botName)
++    if (matched) {
++      logger.debug(`Reachy live trigger matched (bare), waiting for next message`)
++      const modifiedMessage = { ...userMessage, body: normalizeBotMention(userMessage.body, botName, false) }
++      return {
++        userMessage: modifiedMessage,
++        action: AgentMessageActions.OK,
++        userContributionVisible: true,
++        suggestion: undefined
++      }
++    }
++
++    return { userMessage, action: AgentMessageActions.OK, userContributionVisible: true, suggestion: undefined }
++  },
++
++  async respond(conversationHistory: ConversationHistory, userMessage) {
++    const chatChannel = this.conversation.channels.find((channel) => channel.name === 'chat')
++    if (!chatChannel) return []
++
++    const botName = this.agentConfig.botName as string
++    const questionText = extractVoiceQuestion(userMessage, conversationHistory.messages, botName)
++    if (!questionText) return []
++
++    logger.debug(`Reachy live agent answering question: "${questionText}"`)
++
++    const llm = await this.getLLM()
++
++    const configuredTopicIds: string[] = this.agentConfig?.topicIds || []
++    let topicDocs
++    if (configuredTopicIds.length > 0) {
++      topicDocs = await Topic.find({ _id: { $in: configuredTopicIds } })
++        .select('_id name description')
++        .lean()
++    } else {
++      topicDocs = await Topic.find({ private: false, isDeleted: false }).select('_id name description').lean()
++    }
++    const topics: TopicRef[] = topicDocs.map((t) => ({ id: t._id.toString(), name: t.name, description: t.description }))
++
++    let personalityName: string | null = null
++    if (this.agentConfig?.personality !== undefined) {
++      personalityName = this.agentConfig.personality
++    } else if (config.enableAgentPersonality) {
++      personalityName = 'sarcastic-expert'
++    }
++
++    const conversationId = this.conversation._id.toString()
++    const systemPromptBase = BASE_SYSTEM_PROMPT.replace('{botName}', botName).replace(
++      '{topicContext}',
++      buildTopicContext(topics)
++    )
++    const systemPrompt = composeSystemPrompt(systemPromptBase, { personalityName })
++
++    const tools: StructuredToolInterface[] = getTools(['web_search', 'event_history', 'archive_wiki'], {
++      topics,
++      activeConversationId: conversationId
++    })
++
++    const chatHistory = formatMultiUserConversationHistory(conversationHistory)
++
++    const requestId = userMessage.source?.requestId as string | undefined
++    const onChunk = requestId
++      ? (text: string) => {
++          websocketGateway
++            .broadcastAnswerChunk(conversationId, ['chat'], { requestId, text, done: false })
++            .catch((err) => logger.warn(`Failed to broadcast answer chunk: ${err}`))
++        }
++      : undefined
++
++    // Recursion limit: each tool round-trip costs 2 graph steps; with web search, event-history,
++    // and archive tool sets all available, the agent may need to consult several before answering.
++    const responseText = (await getAgentStructuredResponse(
++      llm,
++      tools,
++      systemPrompt,
++      `## Question:\n${questionText}`,
++      undefined,
++      chatHistory,
++      35,
++      { onChunk }
++    )) as string
++
++    if (requestId) {
++      await websocketGateway
++        .broadcastAnswerChunk(conversationId, ['chat'], { requestId, text: '', done: true })
++        .catch((err) => logger.warn(`Failed to broadcast final answer-chunk marker: ${err}`))
++    }
++
++    return [
++      {
++        visible: true,
++        messageType: 'json' as const,
++        channels: [chatChannel],
++        parent: undefined,
++        message: {
++          text: responseText,
++          source: 'voice',
++          sourceMessage: questionText,
++          sourcePseudonym: userMessage.pseudonym
++        }
++      }
++    ]
++  },
++
++  async start() {
++    return true
++  },
++
++  async stop() {
++    return true
++  },
++
++  async introduce() {
++    return []
++  },
++
++  formatTraceInput(conversationHistory, userMessage) {
++    return userMessage?.body
++  },
++
++  formatTraceOutput(responses) {
++    return responses[0]?.message
++  },
++
++  getTraceMetadata(conversationHistory, userMessage, responses) {
++    return {
++      conversationHistory,
++      channels: userMessage?.channels,
++      topic: responses[0]?.topic
++    }
++  }
++})
+diff --git a/src/agents/tools/registry.ts b/src/agents/tools/registry.ts
+index 453e750..1c1b4d4 100644
+--- a/src/agents/tools/registry.ts
++++ b/src/agents/tools/registry.ts
+@@ -3,6 +3,7 @@ import logger from '../../config/logger.js'
+ import { webSearchTool } from './webSearch.js'
+ import { searchSemanticScholarTool, getSemanticScholarRecommendationsTool } from './semanticScholar.js'
+ import createEventHistoryTools from './eventHistory.js'
++import { bkcArchiveWikiTools } from './bkcArchiveWiki.js'
+ 
+ /**
+  * A factory that returns one or more LangChain tools.
+@@ -70,3 +71,5 @@ registerTool('event_history', (context) => {
+   }
+   return createEventHistoryTools(topics, { activeConversationId: context?.activeConversationId })
+ })
++
++registerTool('archive_wiki', () => bkcArchiveWikiTools)
+diff --git a/src/websockets/websocketGateway.ts b/src/websockets/websocketGateway.ts
+index 24c00d9..f26a88c 100644
+--- a/src/websockets/websocketGateway.ts
++++ b/src/websockets/websocketGateway.ts
+@@ -92,6 +92,21 @@ class WebsocketGateway {
+     await this.broadcast(conversationId, 'resources:updated', { resources: resources.map((r) => r.toJSON()) })
+   }
+ 
++  /**
++   * Broadcasts one incremental sentence of a still-generating agent answer, so a voice
++   * client can start speaking before the full response finishes (see llmChain.ts's
++   * streamAgentAndReportChunks). Ephemeral - never persisted as a Message, unlike
++   * broadcastNewMessage - so it's safe to emit many times per request with no history/RAG
++   * side effects. `done: true` marks the last chunk for a given requestId.
++   */
++  async broadcastAnswerChunk(
++    conversationId: string,
++    channels: string[],
++    payload: { requestId: string; text: string; done: boolean }
++  ) {
++    await this.broadcast(conversationId, 'berky:answer_chunk', payload, channels)
++  }
++
+   async broadcastTranscriptStatusChange(conversation, status) {
+     await this.broadcast(
+       conversation._id.toString(),

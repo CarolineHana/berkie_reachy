@@ -96,12 +96,14 @@ def ensure_yarn_ready() -> str:
 
     corepack_path = state.find_executable("corepack")
     if corepack_path:
-        subprocess.run([corepack_path, "enable"], check=False, capture_output=True)
+        env = state.subprocess_env()
+        subprocess.run([corepack_path, "enable"], check=False, capture_output=True, env=env)
         subprocess.run(
             [corepack_path, "prepare", f"yarn@{PINNED_YARN_VERSION}", "--activate"],
             check=True,
             capture_output=True,
             text=True,
+            env=env,
         )
         yarn_path = state.find_executable("yarn")
         if yarn_path:
@@ -123,7 +125,7 @@ def ensure_dependencies_installed(src_dir: Path, yarn_cmd: str) -> None:
         logger.debug("node_modules already present and current, skipping yarn install")
         return
     logger.info("Installing llm_engine dependencies (this can take a few minutes on first run)...")
-    subprocess.run([yarn_cmd, "install", "--frozen-lockfile"], cwd=str(src_dir), check=True)
+    subprocess.run([yarn_cmd, "install", "--frozen-lockfile"], cwd=str(src_dir), check=True, env=state.subprocess_env())
     state.write_build_marker(src_dir, marker)
 
 
@@ -142,7 +144,7 @@ def ensure_built(src_dir: Path, yarn_cmd: str) -> None:
         logger.debug("llm_engine already built and current, skipping yarn build")
         return
     logger.info("Building llm_engine...")
-    subprocess.run([yarn_cmd, "build"], cwd=str(src_dir), check=True)
+    subprocess.run([yarn_cmd, "build"], cwd=str(src_dir), check=True, env=state.subprocess_env())
     state.write_build_marker(src_dir, marker)
 
 

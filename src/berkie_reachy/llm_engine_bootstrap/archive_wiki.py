@@ -1,11 +1,11 @@
-"""Clone/build/run the BKC archive-wiki API locally, so Berky's eventHistorian agent can search it.
+"""Clone/build/run the BKC archive-wiki API locally, so Berky's reachyLiveAgent can search it.
 
 Mirrors repo.py/node.py's pattern for llm_engine itself: the wiki content and
 its small HTTP API aren't vendored into berkie_reachy - they're cloned fresh
 from the public berkmancenter/bkc-archive-wiki repo onto the host machine,
 built, and run as a local subprocess. Best-effort by design: if this fails to
 clone/build/start, Berky's core voice loop (web_search, event_history) still
-works fine without it - eventHistorian's bkcArchiveWikiTools just stays empty.
+works fine without it - reachyLiveAgent's bkcArchiveWikiTools just stays empty.
 """
 
 from __future__ import annotations
