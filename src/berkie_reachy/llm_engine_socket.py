@@ -101,6 +101,12 @@ def _transcript_channel() -> dict[str, str]:
 # still finishes before the previous token actually expires.
 _TOKEN_REFRESH_MARGIN_SECONDS = 5 * 60
 
+# LLM Engine auto-stops a conversation after 5 minutes with no transcript-channel
+# activity (deactivating every agent on it - see _keepalive_loop below). A real voice
+# assistant has idle gaps far longer than that as a matter of course, so re-arm the
+# conversation comfortably before that timeout can ever fire.
+_KEEPALIVE_INTERVAL_SECONDS = 4 * 60
+
 
 @dataclass(frozen=True)
 class AuthSession:
@@ -136,6 +142,7 @@ class LLMEngineSocketClient:
         self._connected = asyncio.Event()
         self._initial_connect_done = False
         self._refresh_task: asyncio.Task[None] | None = None
+        self._keepalive_task: asyncio.Task[None] | None = None
         self._register_handlers()
 
     def _register_handlers(self) -> None:
@@ -251,6 +258,8 @@ class LLMEngineSocketClient:
 
         if self._refresh_task is None or self._refresh_task.done():
             self._refresh_task = asyncio.create_task(self._refresh_loop())
+        if self._keepalive_task is None or self._keepalive_task.done():
+            self._keepalive_task = asyncio.create_task(self._keepalive_loop())
 
     async def _refresh_loop(self) -> None:
         """Re-authenticate before the access token expires.
@@ -289,6 +298,39 @@ class LLMEngineSocketClient:
                 except Exception:
                     logger.exception("Failed to refresh LLM Engine auth token; will retry shortly")
                     await asyncio.sleep(30.0)
+        except asyncio.CancelledError:
+            pass
+
+    async def _keep_conversation_active(self) -> None:
+        """Re-arm the conversation via LLM Engine's start endpoint, if it isn't already active.
+
+        LLM Engine auto-stops a conversation - deactivating every agent on it - after 5
+        minutes with no transcript-channel message, and nothing reactivates it automatically:
+        not `conversation:join`, not `message:create`. Messages sent afterward still get
+        persisted (this looks like it's working), but no agent ever evaluates them again -
+        Berky silently stops responding to "hey Berkie" forever, with no error anywhere,
+        after any 5-minute gap in speech. Confirmed live. `start` is idempotent (a no-op if
+        already active), so calling this on a fixed cadence is safe.
+        """
+        if self.session is None:
+            return
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    _api_url(f"conversations/{config.BERKIE_LLM_ENGINE_CONVERSATION_ID}/start"),
+                    headers={"Authorization": f"Bearer {self.session.token}"},
+                )
+                if response.status_code >= 400:
+                    logger.warning("Failed to keep conversation active: %s", _error_text(response))
+        except httpx.HTTPError:
+            logger.warning("Failed to keep conversation active (network error); will retry shortly")
+
+    async def _keepalive_loop(self) -> None:
+        """Call _keep_conversation_active on a fixed cadence for as long as this client is alive."""
+        try:
+            while True:
+                await self._keep_conversation_active()
+                await asyncio.sleep(_KEEPALIVE_INTERVAL_SECONDS)
         except asyncio.CancelledError:
             pass
 
@@ -363,6 +405,9 @@ class LLMEngineSocketClient:
         if self._refresh_task is not None:
             self._refresh_task.cancel()
             self._refresh_task = None
+        if self._keepalive_task is not None:
+            self._keepalive_task.cancel()
+            self._keepalive_task = None
         if self.sio.connected:
             await self.sio.disconnect()
 
