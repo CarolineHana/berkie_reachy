@@ -58,6 +58,25 @@ def find_executable(name: str) -> Optional[str]:
             return str(candidate)
     return None
 
+
+def subprocess_env() -> dict[str, str]:
+    """Build an env for subprocesses that need to find node/yarn/etc. themselves.
+
+    find_executable() resolves an absolute path for the command we invoke directly,
+    but Yarn (via Corepack) is itself a `#!/usr/bin/env node` script - it re-resolves
+    `node` from PATH internally. On a GUI-launched daemon (see module docstring), the
+    parent process's PATH often lacks _EXTRA_BIN_DIRS, so the executable we found is
+    reachable but anything IT execs by name is not - confirmed live: `yarn install`
+    failing with exit 127 because the subprocess's `env: node: No such file or
+    directory` even though `yarn`'s own absolute path resolved fine. Prepending these
+    dirs unconditionally is harmless when they're already on PATH.
+    """
+    env = dict(os.environ)
+    existing = env.get("PATH", "")
+    prefix = os.pathsep.join(d for d in _EXTRA_BIN_DIRS if d not in existing)
+    env["PATH"] = f"{prefix}{os.pathsep}{existing}" if prefix else existing
+    return env
+
 APP_DATA_ROOT = Path.home() / ".berkie_reachy" / "llm_backend"
 ARCHIVE_WIKI_DATA_ROOT = Path.home() / ".berkie_reachy" / "archive_wiki"
 
