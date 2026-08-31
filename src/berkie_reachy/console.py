@@ -14,7 +14,7 @@ import sys
 import time
 import asyncio
 import logging
-from typing import List, Optional
+from typing import Any, List, Optional
 from pathlib import Path
 
 from fastrtc import AdditionalOutputs, audio_to_float32
@@ -54,11 +54,15 @@ class LocalStream:
         *,
         settings_app: Optional[FastAPI] = None,
         instance_path: Optional[str] = None,
+        interaction_mode: Optional[Any] = None,
     ):
         """Initialize the stream with an OpenAI realtime handler and pipelines.
 
         - ``settings_app``: the Reachy Mini Apps FastAPI to attach settings endpoints.
         - ``instance_path``: directory where per-instance ``.env`` should be stored.
+        - ``interaction_mode``: shared Welcomer/Community Assistant toggle (see
+          interaction_mode.py); only passed when the Welcomer feature is actually
+          wired up, so the settings page can hide the control otherwise.
         """
         self.handler = handler
         self._robot = robot
@@ -68,6 +72,7 @@ class LocalStream:
         self.handler._clear_queue = self.clear_audio_queue
         self._settings_app: Optional[FastAPI] = settings_app
         self._instance_path: Optional[str] = instance_path
+        self._interaction_mode = interaction_mode
         self._settings_initialized = False
         self._asyncio_loop = None
         # Set for real in launch(); defaults to True (legacy behavior) so the
@@ -305,6 +310,29 @@ class LocalStream:
             except Exception as e:
                 logger.warning(f"API key validation failed: {e}")
                 return JSONResponse({"valid": False, "error": "validation_error"}, status_code=500)
+
+        # GET /interaction_mode -> current Welcomer/Community Assistant mode,
+        # or {"available": False} when Welcomer isn't wired up at all.
+        @self._settings_app.get("/interaction_mode")
+        def _get_interaction_mode() -> JSONResponse:
+            if self._interaction_mode is None:
+                return JSONResponse({"available": False})
+            return JSONResponse({"available": True, "mode": self._interaction_mode.mode})
+
+        class ModePayload(BaseModel):
+            mode: str
+
+        # POST /interaction_mode -> switch modes
+        @self._settings_app.post("/interaction_mode")
+        def _set_interaction_mode(payload: ModePayload) -> JSONResponse:
+            if self._interaction_mode is None:
+                return JSONResponse({"ok": False, "error": "unavailable"}, status_code=404)
+            valid = {self._interaction_mode.WELCOMER, self._interaction_mode.COMMUNITY_ASSISTANT}
+            if payload.mode not in valid:
+                return JSONResponse({"ok": False, "error": "invalid_mode"}, status_code=400)
+            self._interaction_mode.mode = payload.mode
+            logger.info("Interaction mode switched to: %s", payload.mode)
+            return JSONResponse({"ok": True, "mode": payload.mode})
 
         self._settings_initialized = True
 

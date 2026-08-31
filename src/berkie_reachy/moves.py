@@ -295,6 +295,77 @@ def start_thinking_motion(movement_manager: Optional["MovementManager"]) -> Call
     return stop
 
 
+def nod_along_with_audio(
+    movement_manager: Optional["MovementManager"],
+    samples: "NDArray[Any]",
+    sample_rate: int,
+) -> None:
+    """Blocking: nod the head a few degrees in sync with one spoken audio chunk.
+
+    Shared by berky_reachy.py and berky_live.py, called once per sentence chunk for the
+    chunk's real playback duration (in place of a bare ``asyncio.sleep`` - run this via
+    ``asyncio.to_thread`` from an async caller). Rather than nodding on an independent,
+    disconnected clock, the head's pitch follows a ~1.6 Hz nod carrier whose amplitude is
+    modulated by that chunk's own short-window volume envelope, so movement energy tracks
+    the actual cadence of the voice - louder/denser speech nods more, pauses go still -
+    peaking at ~7 degrees, with the envelope smoothed (fast attack, slower release) so
+    amplitude swells instead of jumping hop-to-hop. Accepts int16 or float samples; only
+    relative amplitude matters, since the envelope is normalized to its own peak.
+
+    No-ops safely if movement_manager is None or the buffer is empty.
+    """
+    if movement_manager is None or sample_rate <= 0 or len(samples) == 0:
+        return
+
+    NOD_AMP = math.radians(7)
+    NOD_FREQ = 1.6
+    HOP_MS = 20
+    ZERO = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+    hop_len = max(1, int(sample_rate * HOP_MS / 1000))
+    float_samples = np.asarray(samples, dtype=np.float64)
+    n_hops = max(1, -(-len(float_samples) // hop_len))  # ceil division
+
+    envelope = np.zeros(n_hops)
+    for i in range(n_hops):
+        window = float_samples[i * hop_len : (i + 1) * hop_len]
+        if len(window):
+            envelope[i] = math.sqrt(float(np.mean(window**2)))
+    peak = float(envelope.max())
+    if peak > 0:
+        envelope /= peak
+
+    # Attack/release smoothing: without this, feeding the raw per-hop RMS straight into
+    # set_speech_offsets reads as jitter, since the movement loop applies each target
+    # instantly with no interpolation of its own.
+    hop_s = HOP_MS / 1000
+    attack_coeff = 1 - math.exp(-hop_s / 0.06)
+    release_coeff = 1 - math.exp(-hop_s / 0.25)
+    level = 0.0
+    for i, raw in enumerate(envelope):
+        coeff = attack_coeff if raw > level else release_coeff
+        level += (raw - level) * coeff
+        envelope[i] = level
+
+    t0 = time.monotonic()
+    try:
+        for i, level in enumerate(envelope):
+            target = t0 + i * HOP_MS / 1000
+            now = time.monotonic()
+            if target > now:
+                time.sleep(target - now)
+            pitch = NOD_AMP * level * math.sin(2 * math.pi * NOD_FREQ * (now - t0))
+            try:
+                movement_manager.set_speech_offsets((0.0, 0.0, 0.0, 0.0, pitch, 0.0))
+            except Exception:
+                return
+    finally:
+        try:
+            movement_manager.set_speech_offsets(ZERO)
+        except Exception:
+            pass
+
+
 class MovementManager:
     """Coordinate sequential moves, additive offsets, and robot output at 100 Hz.
 

@@ -200,3 +200,43 @@ class CommandTTS:
         if all("{text}" not in part for part in parts):
             replaced.append(text)
         return replaced
+
+
+def speak_sync_through_robot(text: str, tts: CommandTTS, robot: Any, movement_manager: Any = None) -> None:
+    """Synthesize ``text`` and play it through the robot's speaker, blocking the caller.
+
+    For plain-thread callers (e.g. welcomer.py) that aren't running inside the app's own
+    asyncio event loop - runs CommandTTS.synthesize() in a short-lived loop of its own.
+    Mirrors berky_reachy.py's _play_through_robot, minus the streaming/chunking machinery
+    that's unnecessary for a single short greeting line.
+
+    If ``movement_manager`` is given, nods along with the audio (see moves.nod_along_with_audio)
+    instead of just holding still for playback - the same subtle talking-nod used elsewhere.
+    """
+    import asyncio as _asyncio
+
+    from fastrtc import audio_to_float32
+    from scipy.signal import resample
+
+    async def _do_speak() -> None:
+        synth = await tts.synthesize(text)
+        if synth is None:
+            await tts.speak(text)
+            return
+
+        sample_rate, samples = synth
+        audio_frame = audio_to_float32(samples)
+        output_sample_rate = robot.media.get_output_audio_samplerate()
+        if sample_rate != output_sample_rate:
+            audio_frame = resample(audio_frame, int(len(audio_frame) * output_sample_rate / sample_rate))
+            sample_rate = output_sample_rate
+
+        robot.media.push_audio_sample(audio_frame)
+        if movement_manager is not None:
+            from berkie_reachy.moves import nod_along_with_audio
+
+            nod_along_with_audio(movement_manager, audio_frame, sample_rate)
+        else:
+            await _asyncio.sleep(len(audio_frame) / sample_rate)
+
+    _asyncio.run(_do_speak())

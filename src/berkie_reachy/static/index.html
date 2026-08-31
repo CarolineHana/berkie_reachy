@@ -61,6 +61,25 @@
           </div>
         </div>
       </div>
+
+      <div id="interaction-mode-panel" class="panel hidden">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Interaction mode</p>
+            <h2>Welcomer / Community Assistant</h2>
+          </div>
+          <span id="interaction-mode-chip" class="chip">Community Assistant</span>
+        </div>
+        <p class="muted">
+          Community Assistant listens for "Hey Berkie" and answers questions. Welcomer instead watches
+          the camera and greets people as they approach - the two never run at the same time.
+        </p>
+        <div class="actions">
+          <button id="mode-community-btn" class="ghost">Community Assistant</button>
+          <button id="mode-welcomer-btn" class="ghost">Welcomer</button>
+        </div>
+        <p id="interaction-mode-status" class="status"></p>
+      </div>
     </div>
 
     <script src="/static/main.js"></script>

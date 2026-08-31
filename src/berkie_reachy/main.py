@@ -118,6 +118,34 @@ def run(
         camera_worker=camera_worker,
     )
 
+    # Shared even when Welcomer is disabled (cheap, and keeps BerkyLiveHandler's
+    # constructor signature uniform) - see interaction_mode.py. Only actually gates
+    # anything once Welcomer is running alongside it.
+    from berkie_reachy.interaction_mode import InteractionMode
+
+    interaction_mode = InteractionMode()
+
+    welcomer = None
+    if config.BERKY_WELCOMER_ENABLED:
+        if camera_worker is not None and not args.no_camera:
+            # Deliberately does NOT reuse args.head_tracker/CameraWorker's own tracker:
+            # that one drives real-time face-following head movement (look_at_image), which
+            # Welcomer has no business turning on as a side effect - it only needs face
+            # *detection* (get_all_faces), not head-steering. Give it its own instance.
+            from berkie_reachy.tts import CommandTTS, speak_sync_through_robot
+            from berkie_reachy.welcomer import Welcomer
+            from berkie_reachy.vision.yolo_head_tracker import HeadTracker as YoloHeadTracker
+
+            welcomer_tts = CommandTTS()
+            welcomer = Welcomer(
+                camera_worker=camera_worker,
+                head_tracker=YoloHeadTracker(),
+                speak=lambda text: speak_sync_through_robot(text, welcomer_tts, robot, movement_manager),
+                interaction_mode=interaction_mode,
+            )
+        else:
+            logger.warning("BERKY_WELCOMER_ENABLED is set but the camera is disabled; Welcomer will not run.")
+
     head_wobbler = HeadWobbler(set_speech_offsets=movement_manager.set_speech_offsets)
 
     deps = ToolDependencies(
@@ -181,19 +209,31 @@ def run(
 
     use_berky_backend = bool(config.BERKIE_LLM_ENGINE_CONVERSATION_ID)
     if use_berky_backend:
-        handler = BerkyLiveHandler(movement_manager=movement_manager)
+        handler = BerkyLiveHandler(movement_manager=movement_manager, interaction_mode=interaction_mode)
     else:
         handler = OpenaiRealtimeHandler(deps, gradio_mode=args.gradio, instance_path=instance_path)
 
     stream_manager: gr.Blocks | LocalStream | None = None
 
+    mode_radio = None
     if args.gradio:
         if use_berky_backend:
+            stream_inputs: List[Any] = [chatbot]
+            if welcomer is not None:
+                # Only shown when Welcomer is actually running alongside the Community
+                # Assistant - otherwise there's nothing to switch to.
+                mode_radio = gr.Radio(
+                    choices=["Community Assistant", "Welcomer"],
+                    value="Community Assistant",
+                    label="Interaction Mode",
+                )
+                stream_inputs.append(mode_radio)
+
             stream = Stream(
                 handler=handler,
                 mode="send-receive",
                 modality="audio",
-                additional_inputs=[chatbot],
+                additional_inputs=stream_inputs,
                 additional_outputs=[chatbot],
                 additional_outputs_handler=update_chatbot,
                 ui_args={"title": "Talk with Berky"},
@@ -232,6 +272,17 @@ def run(
         if not use_berky_backend:
             personality_ui.wire_events(handler, stream_manager)
 
+        if mode_radio is not None:
+
+            def _on_mode_change(selected: str) -> None:
+                interaction_mode.mode = (
+                    interaction_mode.WELCOMER if selected == "Welcomer" else interaction_mode.COMMUNITY_ASSISTANT
+                )
+                logger.info("Interaction mode switched to: %s", selected)
+
+            with stream_manager:
+                mode_radio.change(fn=_on_mode_change, inputs=[mode_radio], outputs=[])
+
         app = gr.mount_gradio_app(app, stream.ui, path="/")
     else:
         # In headless mode, wire settings_app + instance_path to console LocalStream
@@ -240,6 +291,7 @@ def run(
             robot,
             settings_app=settings_app,
             instance_path=instance_path,
+            interaction_mode=interaction_mode if welcomer is not None else None,
         )
 
     # Each async service → its own thread/loop
@@ -249,6 +301,8 @@ def run(
         camera_worker.start()
     if vision_manager:
         vision_manager.start()
+    if welcomer:
+        welcomer.start()
 
     def poll_stop_event() -> None:
         """Poll the stop event to allow graceful shutdown."""
@@ -275,6 +329,8 @@ def run(
             camera_worker.stop()
         if vision_manager:
             vision_manager.stop()
+        if welcomer:
+            welcomer.stop()
 
         # Ensure media is explicitly closed before disconnecting
         try:

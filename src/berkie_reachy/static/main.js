@@ -184,6 +184,68 @@ async function initLlmBackendPanel() {
   });
 }
 
+async function fetchInteractionMode() {
+  try {
+    const resp = await fetchWithTimeout("/interaction_mode", {}, 2000);
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch (e) {
+    return null;
+  }
+}
+
+async function setInteractionMode(mode) {
+  const resp = await fetch("/interaction_mode", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode }),
+  });
+  if (!resp.ok) {
+    const data = await resp.json().catch(() => ({}));
+    throw new Error(data.error || "set_mode_failed");
+  }
+  return await resp.json();
+}
+
+async function initInteractionModePanel() {
+  const panel = document.getElementById("interaction-mode-panel");
+  const chip = document.getElementById("interaction-mode-chip");
+  const communityBtn = document.getElementById("mode-community-btn");
+  const welcomerBtn = document.getElementById("mode-welcomer-btn");
+  const statusEl = document.getElementById("interaction-mode-status");
+
+  const initial = await fetchInteractionMode();
+  if (!initial || !initial.available) return;
+  show(panel, true);
+
+  const render = (mode) => {
+    const isWelcomer = mode === "welcomer";
+    chip.textContent = isWelcomer ? "Welcomer" : "Community Assistant";
+    chip.className = "chip chip-ok";
+    communityBtn.classList.toggle("ghost", isWelcomer);
+    welcomerBtn.classList.toggle("ghost", !isWelcomer);
+  };
+  render(initial.mode);
+
+  const switchTo = async (mode) => {
+    statusEl.textContent = "Switching...";
+    statusEl.className = "status";
+    try {
+      const result = await setInteractionMode(mode);
+      render(result.mode);
+      statusEl.textContent = "Switched.";
+      statusEl.className = "status ok";
+    } catch (e) {
+      statusEl.textContent = "Failed to switch mode. Please try again.";
+      statusEl.className = "status error";
+    }
+  };
+
+  communityBtn.addEventListener("click", () => switchTo("community_assistant"));
+  welcomerBtn.addEventListener("click", () => switchTo("welcomer"));
+}
+
 window.addEventListener("DOMContentLoaded", () => {
   initLlmBackendPanel();
+  initInteractionModePanel();
 });

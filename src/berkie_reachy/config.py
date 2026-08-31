@@ -185,8 +185,16 @@ class Config:
     TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
     BERKY_TRANSCRIPT_CHANNEL = os.getenv("BERKY_TRANSCRIPT_CHANNEL", "transcript")
     BERKY_TRANSCRIPT_CHANNEL_PASSCODE = os.getenv("BERKY_TRANSCRIPT_CHANNEL_PASSCODE")
-    BERKY_RESPONSE_CHANNELS = _env_list("BERKY_RESPONSE_CHANNELS", ["chat"])
+    # communityAssistant (the agent replacing reachyLiveAgent) echoes its response back on
+    # whichever channel(s) the question arrived on - for Reachy that's always transcript,
+    # not chat (see llm_engine_bootstrap/seed.py's channel setup).
+    BERKY_RESPONSE_CHANNELS = _env_list("BERKY_RESPONSE_CHANNELS", ["transcript"])
     BERKY_WAKE_PHRASE = os.getenv("BERKY_WAKE_PHRASE", "hey berkie")
+    # Feature A (Welcomer, launch-event spec): vision-triggered greetings at the
+    # registration table. Off by default until validated on real hardware - requires
+    # --head-tracker yolo (welcomer.py needs HeadTracker.get_all_faces(), which only the
+    # YOLO tracker implements).
+    BERKY_WELCOMER_ENABLED = _env_flag("BERKY_WELCOMER_ENABLED", False)
     # small.en trades a bit of latency for meaningfully better accuracy on the
     # wake phrase itself - base.en was mis-hearing "hey berkie" too often
     # (Birky, murky, working, Ricky, ...), most of which fall below even a
@@ -198,11 +206,13 @@ class Config:
     # cost - worth it here since Whisper transcription is a hard blocking step
     # in the STT->LLM->TTS chain (nothing else can start until it finishes).
     BERKY_WHISPER_COMPUTE_TYPE = os.getenv("BERKY_WHISPER_COMPUTE_TYPE", "int8")
-    BERKY_TRANSCRIBE_WINDOW_SECONDS = _env_float("BERKY_TRANSCRIBE_WINDOW_SECONDS", 6.0)
-    # 0.5s (down from 0.8s) - safe to tighten now that real WebRTC VAD drives
-    # endpointing instead of a noisy RMS threshold, and this timeout is paid
-    # on every single turn, so it's one of the highest-leverage latency knobs.
-    BERKY_SILENCE_SECONDS = _env_float("BERKY_SILENCE_SECONDS", 0.5)
+    # 10s (up from 6s) - live questions routinely ran past the old 6s ceiling and
+    # got force-cut mid-sentence regardless of the silence timeout below.
+    BERKY_TRANSCRIBE_WINDOW_SECONDS = _env_float("BERKY_TRANSCRIBE_WINDOW_SECONDS", 10.0)
+    # 0.9s - 1.2s reliably captured the whole question but felt sluggish to wait through
+    # on every turn. 0.5s/0.8s both cut questions off mid-sentence on a normal speaking
+    # pause, so this splits the difference rather than reverting all the way down.
+    BERKY_SILENCE_SECONDS = _env_float("BERKY_SILENCE_SECONDS", 0.9)
     # WebRTC VAD aggressiveness: 0 (least aggressive about filtering out
     # non-speech) to 3 (most aggressive). Higher values end silence segments
     # faster but risk clipping soft speech.

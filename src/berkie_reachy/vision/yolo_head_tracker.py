@@ -1,6 +1,6 @@
 from __future__ import annotations
 import logging
-from typing import Tuple
+from typing import Any, Tuple
 
 import numpy as np
 from numpy.typing import NDArray
@@ -105,6 +105,45 @@ class HeadTracker:
         norm_y = (center_y / h) * 2.0 - 1.0
 
         return np.array([norm_x, norm_y], dtype=np.float32)
+
+    def get_all_faces(self, img: NDArray[np.uint8]) -> list[dict[str, Any]]:
+        """Detect every face above the confidence threshold (not just the single best one).
+
+        Used by presence-driven features (e.g. the Welcomer) that need to reason about
+        everyone in frame - group size, per-person distance - rather than just where to
+        steer the head.
+
+        Returns a list of dicts, each with:
+            center: face center in [-1, 1] MediaPipe-style coords
+            area_fraction: bounding-box area as a fraction of the frame (0-1) - a cheap
+                proxy for distance, since a real depth estimate isn't available here.
+            confidence: detector confidence for this face
+        """
+        h, w = img.shape[:2]
+        try:
+            results = self.model(img, verbose=False)
+            detections = Detections.from_ultralytics(results[0])
+        except Exception as e:
+            logger.error(f"Error in multi-face detection: {e}")
+            return []
+
+        if detections.confidence is None or detections.xyxy.shape[0] == 0:
+            return []
+
+        valid_mask = detections.confidence >= self.confidence_threshold
+        faces = []
+        for idx in np.where(valid_mask)[0]:
+            bbox = detections.xyxy[idx]
+            center = self._bbox_to_mp_coords(bbox, w, h)
+            area_fraction = float((bbox[2] - bbox[0]) * (bbox[3] - bbox[1]) / (w * h))
+            faces.append(
+                {
+                    "center": center,
+                    "area_fraction": area_fraction,
+                    "confidence": float(detections.confidence[idx]),
+                }
+            )
+        return faces
 
     def get_head_position(self, img: NDArray[np.uint8]) -> Tuple[NDArray[np.float32] | None, float | None]:
         """Get head position from face detection.
