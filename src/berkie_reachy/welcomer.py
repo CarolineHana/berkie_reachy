@@ -46,6 +46,16 @@ CORE_LINES = [
     "Hello! Great to have you at the Center.",
     "Hi there — make yourself at home at BKC.",
     "Welcome — come on in.",
+    "Hi! So glad you're here at BKC.",
+    "Welcome to the Center — come on in.",
+    "Hey there — welcome, glad you made it.",
+    "Hi! Welcome — good to see you at BKC.",
+    "Welcome in — you're in the right place.",
+    "Hello! Welcome to the Berkman Klein Center.",
+    "Hi there — great to have you with us.",
+    "Welcome — settle in and enjoy.",
+    "Hey! Welcome to the Center.",
+    "Hi! Lovely to have you at BKC.",
 ]
 
 # Launch/orientation flavor: context-wide, always true at this event.
