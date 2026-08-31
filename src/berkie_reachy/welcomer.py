@@ -89,14 +89,14 @@ class WelcomerConfig:
     # Bounding-box area as a fraction of frame area, used as a distance proxy (no real
     # depth sensor available). Above this -> "close and oriented" (Welcome tier). Needs
     # tuning against the actual registration-table camera position/FOV before launch.
-    close_area_fraction: float = 0.04
+    close_area_fraction: float = 0.0005
     # Below this detector confidence, don't even Glance - treat as noise.
     low_confidence_threshold: float = 0.3
     # One welcome per person per this many minutes.
     no_repeat_window_minutes: float = 20.0
     # Minimum gap between any two spoken greetings, regardless of who they're for -
     # spec calls for a 10-15s delay so greetings don't fire back-to-back.
-    min_greeting_gap_seconds: float = 12.0
+    min_greeting_gap_seconds: float = 5.0
     # A track not seen for this long is dropped - a re-appearance after this gets a
     # fresh visual ID (and is treated as a new person per the spec's low-confidence
     # fallback: prefer an occasional repeat greeting over a false "weren't you just
