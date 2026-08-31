@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+import random
 import socket
 import asyncio
 import logging
@@ -39,6 +40,14 @@ logger = logging.getLogger(__name__)
 # question) - bounds how long the thinking motion runs if a wake-ish transcript never
 # actually gets a response (e.g. a mis-transcription that doesn't match server-side either).
 THINKING_TIMEOUT_SECONDS = 30.0
+
+# Spoken the moment a wake phrase is detected, in parallel with the thinking motion -
+# synthesized locally via self.tts and never touches llm_engine, so it plays with none of
+# the LLM round-trip latency the real answer is stuck waiting on.
+THINKING_ACK_LINES = [
+    "Heard you loud and clear, let me find the answer for you.",
+    "Let me look that up for you.",
+]
 
 
 def _prepend_env_path(name: str, values: list[Path]) -> None:
@@ -259,6 +268,7 @@ class BerkyReachyRuntime:
         self._thinking_token += 1
         token = self._thinking_token
         self._thinking_stop = start_thinking_motion(self._movement_manager)
+        asyncio.create_task(self._speak_thinking_ack())
 
         async def _watchdog() -> None:
             await asyncio.sleep(THINKING_TIMEOUT_SECONDS)
@@ -272,6 +282,29 @@ class BerkyReachyRuntime:
         if self._thinking_stop is not None:
             self._thinking_stop()
             self._thinking_stop = None
+
+    async def _speak_thinking_ack(self) -> None:
+        """Speak a short local acknowledgment right away, alongside the thinking motion.
+
+        Deliberately bypasses llm_engine entirely (no backend round trip) - see
+        THINKING_ACK_LINES. Doesn't nod along (unlike _play_through_robot) so it doesn't
+        fight the thinking motion's own head movement over the same offsets.
+        """
+        line = random.choice(THINKING_ACK_LINES)
+        try:
+            synth = await self.tts.synthesize(line)
+        except Exception:
+            logger.warning("Failed to synthesize thinking-ack line", exc_info=True)
+            return
+        if synth is None:
+            return
+
+        sample_rate, samples = synth
+        audio_frame = audio_to_float32(samples)
+        output_sample_rate = self.robot.media.get_output_audio_samplerate()
+        if sample_rate != output_sample_rate:
+            audio_frame = resample(audio_frame, int(len(audio_frame) * output_sample_rate / sample_rate))
+        self.robot.media.push_audio_sample(audio_frame)
 
     async def _play_through_robot(self, text: str) -> None:
         """Synthesize ``text``, play it through Reachy's own speaker, and nod along with it.

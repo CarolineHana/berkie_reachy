@@ -56,6 +56,7 @@ CORE_LINES = [
     "Welcome — settle in and enjoy.",
     "Hey! Welcome to the Center.",
     "Hi! Lovely to have you at BKC.",
+    "Hey there, welcome to the jungle.",
 ]
 
 # Launch/orientation flavor: context-wide, always true at this event.

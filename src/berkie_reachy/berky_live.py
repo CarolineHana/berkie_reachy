@@ -8,6 +8,7 @@ robot's own speaker.
 """
 
 from __future__ import annotations
+import random
 import asyncio
 import logging
 from typing import Any, Tuple, Callable, Optional
@@ -29,6 +30,14 @@ logger = logging.getLogger(__name__)
 # question) - bounds how long the thinking motion runs if a wake-ish transcript never
 # actually gets a response (e.g. a mis-transcription that doesn't match server-side either).
 THINKING_TIMEOUT_SECONDS = 30.0
+
+# Spoken the moment a wake phrase is detected, in parallel with the thinking motion -
+# synthesized locally via self.tts and never touches llm_engine, so it plays with none of
+# the LLM round-trip latency the real answer is stuck waiting on.
+THINKING_ACK_LINES = [
+    "Heard you loud and clear, let me find the answer for you.",
+    "Let me look that up for you.",
+]
 
 
 class BerkyLiveHandler(AsyncStreamHandler):
@@ -101,6 +110,7 @@ class BerkyLiveHandler(AsyncStreamHandler):
         self._thinking_token += 1
         token = self._thinking_token
         self._thinking_stop = start_thinking_motion(self._movement_manager)
+        asyncio.create_task(self._speak_thinking_ack())
 
         async def _watchdog() -> None:
             await asyncio.sleep(THINKING_TIMEOUT_SECONDS)
@@ -108,6 +118,26 @@ class BerkyLiveHandler(AsyncStreamHandler):
                 self._end_thinking()
 
         asyncio.create_task(_watchdog())
+
+    async def _speak_thinking_ack(self) -> None:
+        """Speak a short local acknowledgment right away, alongside the thinking motion.
+
+        Deliberately bypasses llm_engine entirely (no backend round trip) - see
+        THINKING_ACK_LINES.
+        """
+        line = random.choice(THINKING_ACK_LINES)
+        try:
+            synth = await self.tts.synthesize(line)
+        except Exception:
+            logger.warning("Failed to synthesize thinking-ack line", exc_info=True)
+            return
+        if synth is None:
+            return
+        self._speaking = True
+        try:
+            await self.output_queue.put(synth)
+        finally:
+            self._speaking = False
 
     def _end_thinking(self) -> None:
         """Stop head motion - called right before real audio starts, or by the watchdog."""
