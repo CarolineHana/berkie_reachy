@@ -214,7 +214,17 @@ async function initInteractionModePanel() {
   const welcomerBtn = document.getElementById("mode-welcomer-btn");
   const statusEl = document.getElementById("interaction-mode-status");
 
-  const initial = await fetchInteractionMode();
+  // The /interaction_mode route only exists once console.py's settings UI has
+  // initialized, which happens after the full llm_engine bootstrap (~40s) - a
+  // single check right on page load routinely lands before that, so retry for a
+  // while rather than giving up (same reasoning as initLlmBackendPanel above).
+  let initial = null;
+  const deadline = Date.now() + 60000;
+  while (Date.now() < deadline) {
+    initial = await fetchInteractionMode();
+    if (initial) break;
+    await sleep(1000);
+  }
   if (!initial || !initial.available) return;
   show(panel, true);
 
