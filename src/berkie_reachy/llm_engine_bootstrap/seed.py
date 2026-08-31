@@ -22,7 +22,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_AGENT_CONFIG = {
     "botName": "Berkie",
     "personality": "sarcastic-expert",
-    "recentTranscriptTurns": 20,
 }
 DEFAULT_LLM_PLATFORM = "bedrock"
 DEFAULT_LLM_MODEL = "us.anthropic.claude-opus-4-6-v1"
@@ -154,17 +153,21 @@ def ensure_seeded(
                 # Channels auto-generate a passcode unless explicitly disabled; this
                 # conversation is exclusively for Berky's own local backend, not a
                 # shared/public channel, so there's nothing to protect against.
+                # transcript only - no chat channel: communityAssistant treats a message's
+                # presence on the transcript channel as the voice-mode signal (see
+                # respond()'s `isVoice = userMessage?.channels?.includes('transcript')`),
+                # and echoes its response back on the same channel(s) the question arrived
+                # on, so input and voice output both live on transcript.
                 "channels": [
                     {"name": "transcript", "passcode": None},
-                    {"name": "chat", "passcode": None},
                 ],
                 "agentTypes": [
                     {
-                        "name": "reachyLiveAgent",
+                        "name": "communityAssistant",
                         "properties": {
-                            # Without topicIds, reachyLiveAgent's event-history tools search
-                            # every public topic system-wide - scope it to just this
-                            # conversation's own event.
+                            # Without topicIds, communityAssistant's event-history tool
+                            # searches every public topic system-wide - scope it to just
+                            # this conversation's own event.
                             "agentConfig": {**DEFAULT_AGENT_CONFIG, "topicIds": [topic_id]},
                             "llmPlatform": DEFAULT_LLM_PLATFORM,
                             "llmModel": DEFAULT_LLM_MODEL,

@@ -8,20 +8,19 @@ robot's own speaker.
 """
 
 from __future__ import annotations
-
 import asyncio
 import logging
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Tuple, Callable, Optional
 
 from fastrtc import AdditionalOutputs, AsyncStreamHandler, wait_for_item
 from numpy.typing import NDArray
 
-from berkie_reachy.config import config
-from berkie_reachy.llm_engine_socket import LLMEngineSocketClient, _message_text
-from berkie_reachy.local_whisper import LocalWhisperSegmenter
-from berkie_reachy.moves import start_thinking_motion
-from berkie_reachy.openai_realtime import contains_wake_phrase
 from berkie_reachy.tts import CommandTTS, split_into_speech_sentences
+from berkie_reachy.moves import nod_along_with_audio, start_thinking_motion
+from berkie_reachy.config import config
+from berkie_reachy.local_whisper import LocalWhisperSegmenter
+from berkie_reachy.openai_realtime import contains_wake_phrase
+from berkie_reachy.llm_engine_socket import LLMEngineSocketClient, _message_text
 
 
 logger = logging.getLogger(__name__)
@@ -35,7 +34,7 @@ THINKING_TIMEOUT_SECONDS = 30.0
 class BerkyLiveHandler(AsyncStreamHandler):
     """Stream browser audio to Berky via local Whisper and LLM Engine."""
 
-    def __init__(self, movement_manager: Optional[Any] = None) -> None:
+    def __init__(self, movement_manager: Optional[Any] = None, interaction_mode: Optional[Any] = None) -> None:
         super().__init__(expected_layout="mono", output_sample_rate=16000, input_sample_rate=16000)
         self.output_queue: "asyncio.Queue[AdditionalOutputs | Tuple[int, NDArray[Any]]]" = asyncio.Queue()
         self.transcriber = LocalWhisperSegmenter()
@@ -46,6 +45,7 @@ class BerkyLiveHandler(AsyncStreamHandler):
         )
         self._connected = False
         self._movement_manager = movement_manager
+        self._interaction_mode = interaction_mode
         self._speaking = False
         # Streaming (see llm_engine's llmChain.ts streamAgentAndReportChunks): sentences
         # arrive one at a time, well before the full response is ready, via
@@ -80,7 +80,7 @@ class BerkyLiveHandler(AsyncStreamHandler):
 
     def copy(self) -> "BerkyLiveHandler":
         """Create a fresh handler for a new stream session."""
-        return BerkyLiveHandler(movement_manager=self._movement_manager)
+        return BerkyLiveHandler(movement_manager=self._movement_manager, interaction_mode=self._interaction_mode)
 
     async def start_up(self) -> None:
         """Connect to LLM Engine before audio starts flowing."""
@@ -136,8 +136,8 @@ class BerkyLiveHandler(AsyncStreamHandler):
     async def _chunk_worker(self) -> None:
         """Background consumer: play synthesized sentences off _synth_queue one at a time, in order.
 
-        The head holds still while actually speaking (see _begin_thinking/_end_thinking);
-        motion happens beforehand, while the answer is still being generated.
+        The head nods subtly in sync with each chunk's own audio (see moves.nod_along_with_audio);
+        the thinking motion happens beforehand, while the answer is still being generated.
         """
         while True:
             synth = await self._synth_queue.get()
@@ -145,7 +145,7 @@ class BerkyLiveHandler(AsyncStreamHandler):
                 if synth is not None:
                     sample_rate, samples = synth
                     await self.output_queue.put(synth)
-                    await asyncio.sleep(len(samples) / sample_rate)
+                    await asyncio.to_thread(nod_along_with_audio, self._movement_manager, samples, sample_rate)
             finally:
                 self._synth_queue.task_done()
 
@@ -165,7 +165,7 @@ class BerkyLiveHandler(AsyncStreamHandler):
             return
 
         if self._active_request_id is None:
-            self._end_thinking()  # real audio is about to start - hold the head still for it
+            self._end_thinking()  # real audio is about to start
             self._active_request_id = request_id
             self._streaming_active = True
             # Mute the mic for the duration of playback - see _on_agent_message for why.
@@ -193,8 +193,6 @@ class BerkyLiveHandler(AsyncStreamHandler):
             await self._synth_queue.join()
             self._speaking = False
             self._streaming_active = False
-            if self._movement_manager is not None:
-                self._movement_manager.set_speech_offsets((0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
 
     async def _on_agent_message(self, message: dict[str, Any]) -> None:
         """Speak and display one agent message.
@@ -224,7 +222,7 @@ class BerkyLiveHandler(AsyncStreamHandler):
         if not chunks:
             return
 
-        self._end_thinking()  # real audio is about to start - hold the head still for it
+        self._end_thinking()  # real audio is about to start
 
         # Mute the mic for the duration of playback - otherwise Berky's own
         # voice, played through the robot's speaker, bleeds back into its mic
@@ -246,11 +244,9 @@ class BerkyLiveHandler(AsyncStreamHandler):
                 any_audio = True
                 sample_rate, samples = synth
                 await self.output_queue.put(synth)
-                await asyncio.sleep(len(samples) / sample_rate)
+                await asyncio.to_thread(nod_along_with_audio, self._movement_manager, samples, sample_rate)
         finally:
             self._speaking = False
-            if self._movement_manager is not None:
-                self._movement_manager.set_speech_offsets((0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
 
         if not any_audio:
             # No file-capable TTS binary found; fall back to direct playback
@@ -265,6 +261,10 @@ class BerkyLiveHandler(AsyncStreamHandler):
             return
         if self._speaking:
             # Mic muted while Berky is talking - see _on_agent_message.
+            return
+        if self._interaction_mode is not None and not self._interaction_mode.is_community_assistant():
+            # Welcomer profile is active - see interaction_mode.py. Don't bother
+            # transcribing mic audio at all while it's Berkie's turn to run.
             return
 
         sample_rate, audio = frame

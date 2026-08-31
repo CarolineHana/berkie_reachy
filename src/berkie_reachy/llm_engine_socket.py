@@ -164,7 +164,10 @@ class LLMEngineSocketClient:
                 return
             await self.on_agent_message(message)
 
-        @self.sio.on("berky:answer_chunk")
+        # communityAssistant's websocketGateway.broadcastMessageChunk emits this generic
+        # event name (renamed from the old reachyLiveAgent-specific "berky:answer_chunk"),
+        # scoped to whichever channel room(s) the request came in on.
+        @self.sio.on("message:chunk")
         async def answer_chunk(data: JsonDict) -> None:
             if self.on_answer_chunk is None:
                 return
@@ -415,13 +418,10 @@ class LLMEngineSocketClient:
         if not message.get("fromAgent"):
             return False
 
-        # reachyLiveAgent posts JSON body with source='voice'.
-        # Filter to only those so Reachy doesn't speak check-ins, intros, etc.
-        body = message.get("body")
-        if message.get("bodyType") == "json" and isinstance(body, dict):
-            if body.get("source") != "voice":
-                return False
-
+        # communityAssistant's voice-mode responses land only on the transcript channel
+        # (see respond()'s responseChannels = input channels) - filtering on
+        # BERKY_RESPONSE_CHANNELS below is what keeps Reachy from speaking chat-channel
+        # replies to other conversations/consumers of this same agent.
         if not _message_text(message):
             return False
         channels = message.get("channels")

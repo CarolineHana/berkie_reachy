@@ -25,7 +25,7 @@ from scipy.signal import resample
 
 from reachy_mini import ReachyMini
 from berkie_reachy.tts import CommandTTS, split_into_speech_sentences
-from berkie_reachy.moves import start_thinking_motion
+from berkie_reachy.moves import nod_along_with_audio, start_thinking_motion
 from berkie_reachy.utils import setup_logger
 from berkie_reachy.config import config
 from berkie_reachy.local_whisper import LocalWhisperSegmenter
@@ -274,7 +274,7 @@ class BerkyReachyRuntime:
             self._thinking_stop = None
 
     async def _play_through_robot(self, text: str) -> None:
-        """Synthesize ``text`` and play it through Reachy's own speaker.
+        """Synthesize ``text``, play it through Reachy's own speaker, and nod along with it.
 
         Mirrors console.py's play_loop / berky_live.py's synthesize()+push pattern:
         self.tts.speak()/speak_chunked() shell out to a local TTS binary that plays on
@@ -295,7 +295,7 @@ class BerkyReachyRuntime:
             sample_rate = output_sample_rate
 
         self.robot.media.push_audio_sample(audio_frame)
-        await asyncio.sleep(len(audio_frame) / sample_rate)
+        await asyncio.to_thread(nod_along_with_audio, self._movement_manager, audio_frame, sample_rate)
 
     async def _chunk_worker(self) -> None:
         """Background consumer: speak sentences off _chunk_queue one at a time, in order."""
@@ -324,7 +324,7 @@ class BerkyReachyRuntime:
             return
 
         if self._active_request_id is None:
-            self._end_thinking()  # real audio is about to start - hold the head still for it
+            self._end_thinking()  # real audio is about to start
             self._active_request_id = request_id
             self._streaming_active = True
             if self._chunk_worker_task is None or self._chunk_worker_task.done():
@@ -365,7 +365,7 @@ class BerkyReachyRuntime:
             self._streamed_last_response = False
             return
 
-        self._end_thinking()  # real audio is about to start - hold the head still for it
+        self._end_thinking()  # real audio is about to start
         for chunk in split_into_speech_sentences(text):
             await self._play_through_robot(chunk)
 
