@@ -168,6 +168,14 @@ class Config:
 
     # Optional
     MODEL_NAME = os.getenv("MODEL_NAME", "gpt-realtime")
+    # "local" (default): auto-provision MongoDB/ChromaDB/llm_engine on this machine and
+    # connect to that (see llm_engine_bootstrap) - the local bootstrap step also persists
+    # its own BASE_URL/SOCKET_URL/CONVERSATION_ID once seeded, which would otherwise
+    # silently overwrite a manually-configured remote deployment on every launch. Set to
+    # "remote" to skip local provisioning entirely and connect to whatever
+    # BERKIE_LLM_ENGINE_BASE_URL/BERKY_LLM_ENGINE_SOCKET_URL/BERKIE_LLM_ENGINE_CONVERSATION_ID
+    # below already point at (e.g. a production llm_engine deployment).
+    BERKY_LLM_ENGINE_MODE = os.getenv("BERKY_LLM_ENGINE_MODE", "local")
     BERKIE_LLM_ENGINE_BASE_URL = os.getenv("BERKIE_LLM_ENGINE_BASE_URL", "http://localhost:3000/v1")
     BERKY_LLM_ENGINE_SOCKET_URL = os.getenv("BERKY_LLM_ENGINE_SOCKET_URL", "http://localhost:5555")
     BERKIE_LLM_ENGINE_TOKEN = os.getenv("BERKIE_LLM_ENGINE_TOKEN")

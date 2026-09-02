@@ -179,20 +179,28 @@ def run(
     # anything required (Node/Yarn/Mongo/chromadb/credentials) isn't ready in
     # time - unlike console.py's OPENAI_API_KEY wait, there's a working
     # fallback here, so blocking indefinitely would be worse, not better.
-    try:
-        from berkie_reachy.llm_engine_bootstrap import ensure_llm_engine_stack
+    if config.BERKY_LLM_ENGINE_MODE == "local":
+        try:
+            from berkie_reachy.llm_engine_bootstrap import ensure_llm_engine_stack
 
-        ensure_llm_engine_stack(
-            settings_app=settings_app,
-            instance_path=instance_path,
-            stop_event=app_stop_event,
-            bedrock_api_key=config.BEDROCK_API_KEY or "",
-            bedrock_base_url=config.BEDROCK_BASE_URL or "",
-            openai_api_key=config.OPENAI_API_KEY or "",
-            tavily_api_key=config.TAVILY_API_KEY or "",
+            ensure_llm_engine_stack(
+                settings_app=settings_app,
+                instance_path=instance_path,
+                stop_event=app_stop_event,
+                bedrock_api_key=config.BEDROCK_API_KEY or "",
+                bedrock_base_url=config.BEDROCK_BASE_URL or "",
+                openai_api_key=config.OPENAI_API_KEY or "",
+                tavily_api_key=config.TAVILY_API_KEY or "",
+            )
+        except Exception:
+            logger.exception("llm_engine backend bootstrap failed; falling back to OpenAI-realtime mode")
+    else:
+        logger.info(
+            "BERKY_LLM_ENGINE_MODE=%s - skipping local llm_engine bootstrap, connecting "
+            "directly to BERKIE_LLM_ENGINE_BASE_URL=%s",
+            config.BERKY_LLM_ENGINE_MODE,
+            config.BERKIE_LLM_ENGINE_BASE_URL,
         )
-    except Exception:
-        logger.exception("llm_engine backend bootstrap failed; falling back to OpenAI-realtime mode")
 
     # Diarization's isolated venv+server (see diarization_bootstrap/) is
     # provisioned lazily on first Diarizer() construction inside

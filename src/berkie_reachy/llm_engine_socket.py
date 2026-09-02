@@ -342,7 +342,16 @@ class LLMEngineSocketClient:
         if self.session is None:
             raise RuntimeError("Cannot join conversation before authentication.")
 
-        channels = [_transcript_channel(), *[{"name": name} for name in config.BERKY_RESPONSE_CHANNELS]]
+        # BERKY_RESPONSE_CHANNELS defaults to including the transcript channel itself
+        # (responses are echoed back on the same channel a question arrived on) - dedupe
+        # so a passcode-protected transcript channel doesn't also get a second, passcode-less
+        # join entry for the same name, which a protected channel on the server can reject.
+        channels = [_transcript_channel()]
+        joined_names = {config.BERKY_TRANSCRIPT_CHANNEL}
+        for name in config.BERKY_RESPONSE_CHANNELS:
+            if name not in joined_names:
+                channels.append({"name": name})
+                joined_names.add(name)
         payload = {
             "token": self.session.token,
             "userId": self.session.user_id,
