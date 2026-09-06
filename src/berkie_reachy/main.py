@@ -202,19 +202,6 @@ def run(
             config.BERKIE_LLM_ENGINE_BASE_URL,
         )
 
-    # Diarization's isolated venv+server (see diarization_bootstrap/) is
-    # provisioned lazily on first Diarizer() construction inside
-    # LocalWhisperSegmenter - just register cleanup here so its subprocess
-    # doesn't linger past this app run.
-    if config.BERKY_DIARIZATION_ENABLED and app_stop_event is not None:
-        def _watch_diarization_stop() -> None:
-            app_stop_event.wait()
-            from berkie_reachy.diarization_bootstrap import stop_server_if_started_by_us
-
-            stop_server_if_started_by_us()
-
-        threading.Thread(target=_watch_diarization_stop, daemon=True).start()
-
     use_berky_backend = bool(config.BERKIE_LLM_ENGINE_CONVERSATION_ID)
     if use_berky_backend:
         handler = BerkyLiveHandler(movement_manager=movement_manager, interaction_mode=interaction_mode)

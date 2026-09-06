@@ -376,7 +376,6 @@ class LLMEngineSocketClient:
         text: str,
         *,
         final: bool = True,
-        speaker: str | None = None,
     ) -> None:
         """Send one transcript message to LLM Engine on the transcript channel."""
         if self.session is None:
@@ -395,8 +394,6 @@ class LLMEngineSocketClient:
             "final": final,
             "requestId": str(uuid.uuid4()),
         }
-        if speaker:
-            source["speaker"] = speaker
 
         payload = {
             "token": self.session.token,

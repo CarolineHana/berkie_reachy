@@ -436,11 +436,7 @@ class BerkyReachyRuntime:
                 if transcript:
                     if contains_wake_phrase(transcript, config.BERKY_WAKE_PHRASE or ""):
                         self._begin_thinking()
-                    await self.client.send_transcript(
-                        transcript,
-                        final=True,
-                        speaker=self.transcriber.last_speaker,
-                    )
+                    await self.client.send_transcript(transcript, final=True)
 
                 await asyncio.sleep(0)
         finally:

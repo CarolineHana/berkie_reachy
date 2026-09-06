@@ -81,19 +81,6 @@ class LocalWhisperSegmenter:
         # to align to the VAD's fixed 10/20/30ms frame size.
         self._pending = np.empty(0, dtype=np.float32)
 
-        self.last_speaker: str | None = None
-        self._diarizer = None
-        if config.BERKY_DIARIZATION_ENABLED:
-            try:
-                from berkie_reachy.diarization import Diarizer
-                self._diarizer = Diarizer(
-                    hf_token=config.HF_TOKEN,
-                    device=config.BERKY_DIARIZATION_DEVICE,
-                )
-                logger.info("Speaker diarization enabled (device=%s)", config.BERKY_DIARIZATION_DEVICE)
-            except ImportError as exc:
-                logger.warning("Diarization requested but pyannote.audio not installed: %s", exc)
-
     async def accept(self, sample_rate: int, frame: NDArray[Any]) -> str | None:
         """Accept one audio frame and return a transcript when a segment ends."""
         audio = _resample_if_needed(_mono_float32(frame), sample_rate)
@@ -184,44 +171,9 @@ class LocalWhisperSegmenter:
             vad_filter=False,
             condition_on_previous_text=False,
         )
-        segments = list(segments)  # materialise so diarizer can reuse the audio
-
-        plain_text = " ".join(seg.text.strip() for seg in segments if seg.text.strip())
-
-        # Diarization on very short clips is unreliable - pyannote's speaker
-        # embeddings need a reasonable amount of clean speech to form a
-        # stable voice fingerprint; on sub-~1.5s segments they're noisy
-        # enough to split one continuous speaker into several spurious
-        # "SPEAKER_XX" labels (confirmed live: one person got diarized as
-        # 3-4 distinct speakers). Skipping diarization below this floor
-        # means short utterances just don't get a speaker label rather than
-        # a confidently wrong one - especially important now that the label
-        # actually reaches the LLM's prompt (see llm_engine's
-        # formatTranscriptMessage) instead of being silently discarded.
-        _MIN_DIARIZATION_SECONDS = 1.5
-        long_enough_for_diarization = len(audio) >= _MIN_DIARIZATION_SECONDS * TARGET_SAMPLE_RATE
-
-        if self._diarizer is not None and long_enough_for_diarization:
-            try:
-                aligned = self._diarizer.align_with_asr(segments, audio, TARGET_SAMPLE_RATE)
-                if aligned:
-                    totals: dict[str, int] = {}
-                    for sp, t in aligned:
-                        totals[sp] = totals.get(sp, 0) + len(t)
-                    self.last_speaker = max(totals, key=totals.__getitem__)
-                    text = " ".join(t for _, t in aligned)
-                else:
-                    self.last_speaker = None
-                    text = plain_text
-            except Exception:
-                logger.warning("Diarization failed, falling back to plain transcript", exc_info=True)
-                self.last_speaker = None
-                text = plain_text
-        else:
-            self.last_speaker = None
-            text = plain_text
+        text = " ".join(seg.text.strip() for seg in segments if seg.text.strip())
 
         transcript = " ".join(text.split())
         if transcript:
-            logger.info("Whisper transcript [%s]: %s", self.last_speaker or "unknown", transcript)
+            logger.info("Whisper transcript: %s", transcript)
         return transcript

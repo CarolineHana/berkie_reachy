@@ -308,16 +308,7 @@ class BerkyLiveHandler(AsyncStreamHandler):
         if contains_wake_phrase(transcript, config.BERKY_WAKE_PHRASE or ""):
             self._begin_thinking()
         try:
-            # last_speaker comes from diarization (see LocalWhisperSegmenter),
-            # if enabled - previously never passed through here at all, so
-            # the diarized label was computed and then silently discarded;
-            # llm_engine never saw it and couldn't use it for speaker-count
-            # questions.
-            await self.client.send_transcript(
-                transcript,
-                final=True,
-                speaker=self.transcriber.last_speaker,
-            )
+            await self.client.send_transcript(transcript, final=True)
         except Exception:
             logger.warning("Failed to send transcript — LLM Engine disconnected, will retry on reconnect")
 
