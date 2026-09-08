@@ -135,21 +135,28 @@ def run(
             try:
                 from berkie_reachy.tts import CommandTTS, speak_sync_through_robot
                 from berkie_reachy.welcomer import Welcomer
-                from berkie_reachy.vision.yolo_head_tracker import HeadTracker as YoloHeadTracker
+
+                def _make_yolo_head_tracker() -> Any:
+                    # Imported here, not at module load - BERKY_WELCOMER_ENABLED defaults
+                    # to true everywhere so the toggle is always available, but YOLO
+                    # (ultralytics/supervision) is an optional extra (pyproject.toml's
+                    # yolo_vision), not part of the base install. Deferring both the
+                    # import and construction until Welcomer mode is actually switched to
+                    # means a device that only ever uses Community Assistant never needs
+                    # YOLO at all - see welcomer.py's _resolve_head_tracker.
+                    from berkie_reachy.vision.yolo_head_tracker import HeadTracker as YoloHeadTracker
+
+                    return YoloHeadTracker()
 
                 welcomer_tts = CommandTTS()
                 welcomer = Welcomer(
                     camera_worker=camera_worker,
-                    head_tracker=YoloHeadTracker(),
+                    head_tracker_factory=_make_yolo_head_tracker,
                     speak=lambda text: speak_sync_through_robot(text, welcomer_tts, robot, movement_manager),
                     interaction_mode=interaction_mode,
                 )
             except Exception:
-                # BERKY_WELCOMER_ENABLED defaults to true (on-by-default across every
-                # install), so a device missing YOLO's dependencies or unable to download/
-                # load its model must not take down the whole app over an optional feature -
-                # Community Assistant has nothing to do with vision and should still work.
-                logger.exception("Failed to initialize Welcomer (YOLO head tracker); continuing without it")
+                logger.exception("Failed to initialize Welcomer; continuing without it")
                 welcomer = None
         else:
             logger.warning("BERKY_WELCOMER_ENABLED is set but the camera is disabled; Welcomer will not run.")

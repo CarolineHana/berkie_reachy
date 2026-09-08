@@ -131,14 +131,26 @@ class Welcomer:
     def __init__(
         self,
         camera_worker: Any,
-        head_tracker: Any,
+        head_tracker_factory: Callable[[], Any],
         speak: Callable[[str], None],
         config: Optional[WelcomerConfig] = None,
         interaction_mode: Optional[Any] = None,
     ) -> None:
-        """Wire up the presence loop against an already-running camera worker."""
+        """Wire up the presence loop against an already-running camera worker.
+
+        ``head_tracker_factory`` is called at most once, the first time a frame is
+        actually processed while Welcomer mode is active - not at construction time.
+        Welcomer defaults to enabled everywhere (so its toggle is always available),
+        but its face detector (YOLO) is an optional dependency (see pyproject.toml's
+        yolo_vision extra) - importing/loading it eagerly would mean every device,
+        including ones that only ever use Community Assistant, pays that cost (or
+        breaks outright if the extra isn't installed) just for a feature they never
+        touch.
+        """
         self.camera_worker = camera_worker
-        self.head_tracker = head_tracker
+        self._head_tracker_factory = head_tracker_factory
+        self._head_tracker: Optional[Any] = None
+        self._head_tracker_unavailable = False
         self.speak = speak
         self.config = config or WelcomerConfig()
         self.interaction_mode = interaction_mode
@@ -168,7 +180,9 @@ class Welcomer:
     def _working_loop(self) -> None:
         while not self._stop_event.is_set():
             try:
-                if self.interaction_mode is None or self.interaction_mode.is_welcomer():
+                if not self._head_tracker_unavailable and (
+                    self.interaction_mode is None or self.interaction_mode.is_welcomer()
+                ):
                     frame = self.camera_worker.get_latest_frame()
                     if frame is not None:
                         self._process_frame(frame)
@@ -176,9 +190,32 @@ class Welcomer:
                 logger.exception("Welcomer loop error")
             time.sleep(self.config.poll_interval_seconds)
 
+    def _resolve_head_tracker(self) -> Optional[Any]:
+        """Lazily construct the head tracker on first use; give up permanently on failure."""
+        if self._head_tracker is not None:
+            return self._head_tracker
+        if self._head_tracker_unavailable:
+            return None
+        try:
+            self._head_tracker = self._head_tracker_factory()
+        except Exception:
+            logger.exception(
+                "Welcomer's head tracker failed to load; switching back to Community "
+                "Assistant since Welcomer can't function without it"
+            )
+            self._head_tracker_unavailable = True
+            if self.interaction_mode is not None:
+                self.interaction_mode.mode = self.interaction_mode.COMMUNITY_ASSISTANT
+            return None
+        return self._head_tracker
+
     def _process_frame(self, frame: Any) -> None:
+        head_tracker = self._resolve_head_tracker()
+        if head_tracker is None:
+            return
+
         now = time.monotonic()
-        faces = self.head_tracker.get_all_faces(frame)
+        faces = head_tracker.get_all_faces(frame)
         faces = [f for f in faces if f["confidence"] >= self.config.low_confidence_threshold]
 
         self._expire_stale_tracks(now)
