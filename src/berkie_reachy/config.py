@@ -216,12 +216,6 @@ class Config:
     # faster but risk clipping soft speech.
     BERKY_VAD_AGGRESSIVENESS = _env_int("BERKY_VAD_AGGRESSIVENESS", 2)
     BERKY_TTS_COMMAND = os.getenv("BERKY_TTS_COMMAND")
-    # Pins the macOS `say` voice explicitly - without this, `say` falls back to whatever
-    # this particular Mac's own system default voice is (System Settings > Accessibility >
-    # Spoken Content), which varies device to device (confirmed: differed between two
-    # laptops) rather than being a property of this app. Only applies to the built-in
-    # macOS `say` command; irrelevant for espeak or a custom BERKY_TTS_COMMAND.
-    BERKY_TTS_VOICE = os.getenv("BERKY_TTS_VOICE", "Alex")
     HF_HOME = os.getenv("HF_HOME", "./cache")
     LOCAL_VISION_MODEL = os.getenv("LOCAL_VISION_MODEL", "HuggingFaceTB/SmolVLM2-2.2B-Instruct")
 
