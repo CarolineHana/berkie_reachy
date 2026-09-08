@@ -125,7 +125,17 @@ def ensure_dependencies_installed(src_dir: Path, yarn_cmd: str) -> None:
         logger.debug("node_modules already present and current, skipping yarn install")
         return
     logger.info("Installing llm_engine dependencies (this can take a few minutes on first run)...")
-    subprocess.run([yarn_cmd, "install", "--frozen-lockfile"], cwd=str(src_dir), check=True, env=state.subprocess_env())
+    # --ignore-engines: some dependency (e.g. @google-cloud/monitoring) declares an
+    # engines.node requirement newer than what's actually needed to run llm_engine here
+    # (confirmed working on Node 20 despite one package wanting >=22) - without this flag,
+    # yarn refuses to install at all on any machine running Node 20, which is what most
+    # devices actually have.
+    subprocess.run(
+        [yarn_cmd, "install", "--frozen-lockfile", "--ignore-engines"],
+        cwd=str(src_dir),
+        check=True,
+        env=state.subprocess_env(),
+    )
     state.write_build_marker(src_dir, marker)
 
 
