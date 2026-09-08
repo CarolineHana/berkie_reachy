@@ -131,14 +131,11 @@ else:
     # "No .env file found" every time. Two real layouts need covering:
     #  - a real (non-editable) install: config.py sits directly at
     #    <site-packages>/berkie_reachy/config.py, and this is also exactly
-    #    ``instance_path`` (main.py's own directory) - the same .env
-    #    llm_engine_bootstrap's _persist_config()/_read_persisted_config()
-    #    already read/write Bedrock/OpenAI/Tavily credentials to. General
-    #    config vars (e.g. BERKY_DIARIZATION_ENABLED) have no such explicit
-    #    side-channel, so they silently stayed at their class defaults here
-    #    until this fallback existed - found the hard way debugging why
-    #    diarization never actually enabled despite the .env clearly having
-    #    it set.
+    #    ``instance_path`` (main.py's own directory) - the deployed instance's
+    #    own .env lives right there too. Without this fallback, config vars set
+    #    in that .env silently stayed at their class defaults instead (found
+    #    the hard way debugging a feature flag that never actually took effect
+    #    despite the .env clearly having it set).
     #  - an editable dev checkout: config.py sits at <repo>/src/berkie_reachy/
     #    config.py, so the repo root (three dirname() calls up) is where a
     #    developer's own .env normally lives.
@@ -168,34 +165,23 @@ class Config:
 
     # Optional
     MODEL_NAME = os.getenv("MODEL_NAME", "gpt-realtime")
-    # "local" (default): auto-provision MongoDB/ChromaDB/llm_engine on this machine and
-    # connect to that (see llm_engine_bootstrap) - the local bootstrap step also persists
-    # its own BASE_URL/SOCKET_URL/CONVERSATION_ID once seeded, which would otherwise
-    # silently overwrite a manually-configured remote deployment on every launch. Set to
-    # "remote" to skip local provisioning entirely and connect to whatever
-    # BERKIE_LLM_ENGINE_BASE_URL/BERKY_LLM_ENGINE_SOCKET_URL/BERKIE_LLM_ENGINE_CONVERSATION_ID
-    # below already point at (e.g. a production llm_engine deployment).
-    BERKY_LLM_ENGINE_MODE = os.getenv("BERKY_LLM_ENGINE_MODE", "local")
-    BERKIE_LLM_ENGINE_BASE_URL = os.getenv("BERKIE_LLM_ENGINE_BASE_URL", "http://localhost:3000/v1")
-    BERKY_LLM_ENGINE_SOCKET_URL = os.getenv("BERKY_LLM_ENGINE_SOCKET_URL", "http://localhost:5555")
+    # Always connects directly to BKC's production llm_engine deployment - there is no
+    # local Mongo/Chroma/Node bootstrap anymore (see the removed llm_engine_bootstrap
+    # package). The base/socket URLs are safe to default here since they're not secret;
+    # CONVERSATION_ID/USERNAME/PASSWORD/passcode below are per-account credentials and
+    # must be supplied via this device's own .env (or the settings UI) - never hardcode
+    # real credentials here, since this file is committed to a public repo.
+    BERKIE_LLM_ENGINE_BASE_URL = os.getenv("BERKIE_LLM_ENGINE_BASE_URL", "https://nextspace.asml.berkmancenter.org/v1")
+    BERKY_LLM_ENGINE_SOCKET_URL = os.getenv("BERKY_LLM_ENGINE_SOCKET_URL", "https://nextspace.asml.berkmancenter.org")
     BERKIE_LLM_ENGINE_TOKEN = os.getenv("BERKIE_LLM_ENGINE_TOKEN")
     BERKIE_LLM_ENGINE_USERNAME = os.getenv("BERKIE_LLM_ENGINE_USERNAME")
     BERKIE_LLM_ENGINE_PASSWORD = os.getenv("BERKIE_LLM_ENGINE_PASSWORD")
     BERKIE_LLM_ENGINE_CONVERSATION_ID = os.getenv("BERKIE_LLM_ENGINE_CONVERSATION_ID")
     BERKIE_LLM_ENGINE_BOT_NAME = os.getenv("BERKIE_LLM_ENGINE_BOT_NAME")
-    # Harvard AIS Bedrock credentials for the auto-provisioned local llm_engine backend.
-    # Collected via the llm_engine_bootstrap settings UI if not already set; persisted
-    # to the instance .env once supplied (see llm_engine_bootstrap/settings_ui.py).
-    BEDROCK_API_KEY = os.getenv("BEDROCK_API_KEY")
-    BEDROCK_BASE_URL = os.getenv("BEDROCK_BASE_URL")
-    # Tavily API key for llm_engine's web_search tool. Optional - without it,
-    # web_search just fails gracefully per-call rather than blocking startup.
-    TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
     BERKY_TRANSCRIPT_CHANNEL = os.getenv("BERKY_TRANSCRIPT_CHANNEL", "transcript")
     BERKY_TRANSCRIPT_CHANNEL_PASSCODE = os.getenv("BERKY_TRANSCRIPT_CHANNEL_PASSCODE")
-    # communityAssistant (the agent replacing reachyLiveAgent) echoes its response back on
-    # whichever channel(s) the question arrived on - for Reachy that's always transcript,
-    # not chat (see llm_engine_bootstrap/seed.py's channel setup).
+    # communityAssistant echoes its response back on whichever channel(s) the question
+    # arrived on - for Reachy that's always transcript, not chat.
     BERKY_RESPONSE_CHANNELS = _env_list("BERKY_RESPONSE_CHANNELS", ["transcript"])
     BERKY_WAKE_PHRASE = os.getenv("BERKY_WAKE_PHRASE", "hey berkie")
     # Feature A (Welcomer, launch-event spec): vision-triggered greetings at the

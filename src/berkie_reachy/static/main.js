@@ -14,176 +14,6 @@ function show(el, flag) {
   el.classList.toggle("hidden", !flag);
 }
 
-const LLM_BACKEND_STEPS = [
-  { key: "node_found", label: "Node.js found" },
-  { key: "yarn_ready", label: "Yarn ready" },
-  { key: "mongo_running", label: "MongoDB running" },
-  { key: "chroma_running", label: "ChromaDB running" },
-  { key: "llm_engine_healthy", label: "llm_engine running" },
-  { key: "seeded", label: "Berky conversation ready" },
-];
-
-async function fetchLlmBackendStatus() {
-  try {
-    const resp = await fetchWithTimeout("/llm_backend/status", {}, 2000);
-    if (!resp.ok) return null;
-    return await resp.json();
-  } catch (e) {
-    return null;
-  }
-}
-
-async function saveBedrockCredentials(apiKey, baseUrl, openaiKey, tavilyKey) {
-  const resp = await fetch("/llm_backend/bedrock_credentials", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      bedrock_api_key: apiKey,
-      bedrock_base_url: baseUrl,
-      openai_api_key: openaiKey,
-      tavily_api_key: tavilyKey,
-    }),
-  });
-  if (!resp.ok) {
-    const data = await resp.json().catch(() => ({}));
-    throw new Error(data.error || "save_failed");
-  }
-  return await resp.json();
-}
-
-async function skipLlmBackend() {
-  const resp = await fetch("/llm_backend/skip", { method: "POST" });
-  if (!resp.ok) throw new Error("skip_failed");
-  return await resp.json();
-}
-
-function renderLlmBackendChecklist(listEl, status) {
-  listEl.innerHTML = "";
-  for (const step of LLM_BACKEND_STEPS) {
-    const li = document.createElement("li");
-    const done = !!status[step.key];
-    li.className = done ? "done" : "";
-    const dot = document.createElement("span");
-    dot.className = "dot";
-    li.appendChild(dot);
-    li.appendChild(document.createTextNode(step.label));
-    listEl.appendChild(li);
-  }
-}
-
-async function initLlmBackendPanel() {
-  const panel = document.getElementById("llm-backend-panel");
-  const chip = document.getElementById("llm-backend-chip");
-  const checklist = document.getElementById("llm-backend-checklist");
-  const needsEl = document.getElementById("llm-backend-needs");
-  const form = document.getElementById("llm-backend-form");
-  const apiKeyInput = document.getElementById("bedrock-api-key");
-  const baseUrlInput = document.getElementById("bedrock-base-url");
-  const openaiKeyInput = document.getElementById("llm-backend-openai-key");
-  const tavilyKeyInput = document.getElementById("llm-backend-tavily-key");
-  const saveBtn = document.getElementById("llm-backend-save-btn");
-  const skipBtn = document.getElementById("llm-backend-skip-btn");
-  const statusEl = document.getElementById("llm-backend-status");
-
-  // Only show this panel at all if the llm_backend routes are actually mounted
-  // (they aren't when the app is running in plain OpenAI-only mode). Retry
-  // for a while rather than giving up after one check - these routes mount
-  // as soon as main.py's run() reaches the bootstrap call, but that can be
-  // a few seconds into startup (robot connection, vision setup, etc. happen
-  // first), and a single failed check here used to permanently hide the
-  // panel for the rest of the page's lifetime (only a full reload, e.g. the
-  // one triggered by saving an OpenAI key elsewhere on this page, gave it
-  // another chance - which looked like "the panel appears after entering an
-  // OpenAI key" but was really just incidental timing).
-  let initialStatus = null;
-  const deadline = Date.now() + 60000;
-  while (Date.now() < deadline) {
-    initialStatus = await fetchLlmBackendStatus();
-    if (initialStatus) break;
-    await sleep(1000);
-  }
-  if (!initialStatus) return;
-
-  show(panel, true);
-
-  let polling = true;
-  const poll = async () => {
-    while (polling) {
-      const status = await fetchLlmBackendStatus();
-      if (status) {
-        renderLlmBackendChecklist(checklist, status);
-        if (status.done) {
-          chip.textContent = "Ready";
-          chip.className = "chip chip-ok";
-          show(form, false);
-          show(needsEl, false);
-          polling = false;
-          break;
-        } else if (status.skipped) {
-          chip.textContent = "Skipped";
-          show(form, false);
-          show(needsEl, false);
-          polling = false;
-          break;
-        } else {
-          chip.textContent = "Setting up";
-          const needs = await fetch("/llm_backend/needs")
-            .then((r) => r.json())
-            .catch(() => ({}));
-          if (needs.instructions) {
-            needsEl.textContent = needs.instructions;
-            show(needsEl, true);
-          } else {
-            show(needsEl, false);
-          }
-          show(form, true);
-        }
-      }
-      await sleep(3000);
-    }
-  };
-  poll();
-
-  saveBtn.addEventListener("click", async () => {
-    const apiKey = apiKeyInput.value.trim();
-    const baseUrl = baseUrlInput.value.trim();
-    const openaiKey = openaiKeyInput.value.trim();
-    const tavilyKey = tavilyKeyInput.value.trim();
-    if (!apiKey || !baseUrl) {
-      statusEl.textContent = "Enter both the Bedrock API key and base URL.";
-      statusEl.className = "status warn";
-      return;
-    }
-    // openaiKey/tavilyKey are optional here - they may already be configured
-    // from a previous save. The backend will report a clear needs_action
-    // message if OpenAI's is actually still missing; Tavily is optional and
-    // just leaves web_search non-functional.
-    statusEl.textContent = "Saving...";
-    statusEl.className = "status";
-    try {
-      await saveBedrockCredentials(apiKey, baseUrl, openaiKey, tavilyKey);
-      statusEl.textContent = "Saved. Trying to connect...";
-      statusEl.className = "status ok";
-    } catch (e) {
-      statusEl.textContent = "Failed to save credentials. Please try again.";
-      statusEl.className = "status error";
-    }
-  });
-
-  skipBtn.addEventListener("click", async () => {
-    statusEl.textContent = "Skipping local backend...";
-    statusEl.className = "status";
-    try {
-      await skipLlmBackend();
-      statusEl.textContent = "Skipped. Using plain OpenAI conversation mode.";
-      statusEl.className = "status ok";
-    } catch (e) {
-      statusEl.textContent = "Failed to skip. Please try again.";
-      statusEl.className = "status error";
-    }
-  });
-}
-
 async function fetchInteractionMode() {
   try {
     const resp = await fetchWithTimeout("/interaction_mode", {}, 2000);
@@ -215,9 +45,9 @@ async function initInteractionModePanel() {
   const statusEl = document.getElementById("interaction-mode-status");
 
   // The /interaction_mode route only exists once console.py's settings UI has
-  // initialized, which happens after the full llm_engine bootstrap (~40s) - a
-  // single check right on page load routinely lands before that, so retry for a
-  // while rather than giving up (same reasoning as initLlmBackendPanel above).
+  // initialized, which happens a few seconds into startup (robot connection,
+  // vision setup, etc. happen first) - a single check right on page load can
+  // land before that, so retry for a while rather than giving up.
   let initial = null;
   const deadline = Date.now() + 60000;
   while (Date.now() < deadline) {
@@ -256,6 +86,5 @@ async function initInteractionModePanel() {
 }
 
 window.addEventListener("DOMContentLoaded", () => {
-  initLlmBackendPanel();
   initInteractionModePanel();
 });

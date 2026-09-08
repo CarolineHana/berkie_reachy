@@ -29,32 +29,26 @@ The preferred runtime is `berky-reachy`:
 
 ## LLM Engine setup
 
-Create or select an LLM Engine conversation in Nextspace with a Berky-like
-agent attached. The closest existing backend reference is
-`src/agents/eventAssistant/voiceAssistant.ts`: it already listens to the
-`transcript` channel, fuzzy-matches wake phrases, and routes responses back to
-a chat channel.
-
-Set these environment variables in `.env`:
+This app connects directly to BKC's production LLM Engine deployment - there
+is no local Mongo/Chroma/Node bootstrap. `BERKIE_LLM_ENGINE_BASE_URL` and
+`BERKY_LLM_ENGINE_SOCKET_URL` already default to that deployment in
+`config.py`; you only need to set the conversation/account details in `.env`
+(never commit real credentials here - this repo is public):
 
 ```bash
-BERKIE_LLM_ENGINE_BASE_URL=http://localhost:3000/v1
-BERKY_LLM_ENGINE_SOCKET_URL=http://localhost:5555
 BERKIE_LLM_ENGINE_CONVERSATION_ID=...
-BERKIE_LLM_ENGINE_TOKEN=...
-
-BERKY_TRANSCRIPT_CHANNEL=transcript
-BERKY_RESPONSE_CHANNELS=chat
+BERKIE_LLM_ENGINE_USERNAME=...
+BERKIE_LLM_ENGINE_PASSWORD=...
+BERKY_TRANSCRIPT_CHANNEL_PASSCODE=...
 ```
 
-`BERKY_WAKE_PHRASE` is **not** used by this `berky-reachy` runtime — the
-backend `voiceAssistant` agent in LLM Engine owns wake-phrase matching
-server-side. That env var only applies to the legacy `berkie-reachy`
-(OpenAI realtime) app below.
+The conversation needs a `communityAssistant` agent attached, listening on
+the `transcript` channel (both input and voice output live there - see
+`BERKY_RESPONSE_CHANNELS`, default `["transcript"]`). Wake-phrase matching is
+handled server-side by that agent, not by this client.
 
-Instead of `BERKIE_LLM_ENGINE_TOKEN`, you can provide
-`BERKIE_LLM_ENGINE_USERNAME` and `BERKIE_LLM_ENGINE_PASSWORD`; the app will log
-in to `/v1/auth/login` and use the returned access token.
+Instead of `BERKIE_LLM_ENGINE_USERNAME`/`PASSWORD`, you can provide a
+pre-issued `BERKIE_LLM_ENGINE_TOKEN` directly.
 
 Optional settings:
 
