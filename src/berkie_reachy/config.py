@@ -167,19 +167,21 @@ class Config:
     MODEL_NAME = os.getenv("MODEL_NAME", "gpt-realtime")
     # Always connects directly to BKC's production llm_engine deployment - there is no
     # local Mongo/Chroma/Node bootstrap anymore (see the removed llm_engine_bootstrap
-    # package). The base/socket URLs are safe to default here since they're not secret;
-    # CONVERSATION_ID/USERNAME/PASSWORD/passcode below are per-account credentials and
-    # must be supplied via this device's own .env (or the settings UI) - never hardcode
-    # real credentials here, since this file is committed to a public repo.
+    # package). These defaults - including the operator account below - are for the
+    # shared "Reachy greeting" test conversation on production, hardcoded here by
+    # explicit request for zero-config setup across devices. This is a dedicated test
+    # operator account, not an admin/personal credential, but it is still a real,
+    # permanently-public credential once committed - don't extend this pattern to any
+    # higher-privilege account without the same explicit call.
     BERKIE_LLM_ENGINE_BASE_URL = os.getenv("BERKIE_LLM_ENGINE_BASE_URL", "https://nextspace.asml.berkmancenter.org/v1")
     BERKY_LLM_ENGINE_SOCKET_URL = os.getenv("BERKY_LLM_ENGINE_SOCKET_URL", "https://nextspace.asml.berkmancenter.org")
     BERKIE_LLM_ENGINE_TOKEN = os.getenv("BERKIE_LLM_ENGINE_TOKEN")
-    BERKIE_LLM_ENGINE_USERNAME = os.getenv("BERKIE_LLM_ENGINE_USERNAME")
-    BERKIE_LLM_ENGINE_PASSWORD = os.getenv("BERKIE_LLM_ENGINE_PASSWORD")
-    BERKIE_LLM_ENGINE_CONVERSATION_ID = os.getenv("BERKIE_LLM_ENGINE_CONVERSATION_ID")
+    BERKIE_LLM_ENGINE_USERNAME = os.getenv("BERKIE_LLM_ENGINE_USERNAME", "berky-operator-d44cfd46")
+    BERKIE_LLM_ENGINE_PASSWORD = os.getenv("BERKIE_LLM_ENGINE_PASSWORD", "Bk-rhb1JnfnG0g6fjGecCYM66bfB_D3JfD9")
+    BERKIE_LLM_ENGINE_CONVERSATION_ID = os.getenv("BERKIE_LLM_ENGINE_CONVERSATION_ID", "6a97073613ae68b577fb8a2c")
     BERKIE_LLM_ENGINE_BOT_NAME = os.getenv("BERKIE_LLM_ENGINE_BOT_NAME")
     BERKY_TRANSCRIPT_CHANNEL = os.getenv("BERKY_TRANSCRIPT_CHANNEL", "transcript")
-    BERKY_TRANSCRIPT_CHANNEL_PASSCODE = os.getenv("BERKY_TRANSCRIPT_CHANNEL_PASSCODE")
+    BERKY_TRANSCRIPT_CHANNEL_PASSCODE = os.getenv("BERKY_TRANSCRIPT_CHANNEL_PASSCODE", "R3v71vdX")
     # communityAssistant echoes its response back on whichever channel(s) the question
     # arrived on - for Reachy that's always transcript, not chat.
     BERKY_RESPONSE_CHANNELS = _env_list("BERKY_RESPONSE_CHANNELS", ["transcript"])
