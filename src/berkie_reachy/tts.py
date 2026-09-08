@@ -82,7 +82,7 @@ def _default_tts_command() -> str | None:
     if config.BERKY_TTS_COMMAND:
         return config.BERKY_TTS_COMMAND
     if platform.system() == "Darwin" and shutil.which("say"):
-        return "say {text}"
+        return f"say -v {config.BERKY_TTS_VOICE} {{text}}"
     if shutil.which("espeak-ng"):
         return "espeak-ng {text}"
     if shutil.which("espeak"):
@@ -99,7 +99,15 @@ def _synth_to_file_argv(out_path: str) -> list[str] | None:
     TTS binary play straight to this machine's own audio output.
     """
     if platform.system() == "Darwin" and shutil.which("say"):
-        return ["say", "--file-format=WAVE", "--data-format=LEI16@22050", "-o", out_path]
+        return [
+            "say",
+            "-v",
+            config.BERKY_TTS_VOICE,
+            "--file-format=WAVE",
+            "--data-format=LEI16@22050",
+            "-o",
+            out_path,
+        ]
     if shutil.which("espeak-ng"):
         return ["espeak-ng", "-w", out_path]
     if shutil.which("espeak"):

@@ -187,10 +187,12 @@ class Config:
     BERKY_RESPONSE_CHANNELS = _env_list("BERKY_RESPONSE_CHANNELS", ["transcript"])
     BERKY_WAKE_PHRASE = os.getenv("BERKY_WAKE_PHRASE", "hey berkie")
     # Feature A (Welcomer, launch-event spec): vision-triggered greetings at the
-    # registration table. Off by default until validated on real hardware - requires
-    # --head-tracker yolo (welcomer.py needs HeadTracker.get_all_faces(), which only the
-    # YOLO tracker implements).
-    BERKY_WELCOMER_ENABLED = _env_flag("BERKY_WELCOMER_ENABLED", False)
+    # registration table, toggled against Community Assistant via the settings-page
+    # Interaction Mode panel. On by default so the toggle is available on every
+    # device without per-install setup - only actually constructed if a camera is
+    # present (see main.py), and doesn't change the startup mode either way:
+    # InteractionMode's own default is always community_assistant (interaction_mode.py).
+    BERKY_WELCOMER_ENABLED = _env_flag("BERKY_WELCOMER_ENABLED", True)
     # small.en trades a bit of latency for meaningfully better accuracy on the
     # wake phrase itself - base.en was mis-hearing "hey berkie" too often
     # (Birky, murky, working, Ricky, ...), most of which fall below even a
@@ -214,6 +216,12 @@ class Config:
     # faster but risk clipping soft speech.
     BERKY_VAD_AGGRESSIVENESS = _env_int("BERKY_VAD_AGGRESSIVENESS", 2)
     BERKY_TTS_COMMAND = os.getenv("BERKY_TTS_COMMAND")
+    # Pins the macOS `say` voice explicitly - without this, `say` falls back to whatever
+    # this particular Mac's own system default voice is (System Settings > Accessibility >
+    # Spoken Content), which varies device to device (confirmed: differed between two
+    # laptops) rather than being a property of this app. Only applies to the built-in
+    # macOS `say` command; irrelevant for espeak or a custom BERKY_TTS_COMMAND.
+    BERKY_TTS_VOICE = os.getenv("BERKY_TTS_VOICE", "Alex")
     HF_HOME = os.getenv("HF_HOME", "./cache")
     LOCAL_VISION_MODEL = os.getenv("LOCAL_VISION_MODEL", "HuggingFaceTB/SmolVLM2-2.2B-Instruct")
 
