@@ -55,6 +55,7 @@ class LocalStream:
         settings_app: Optional[FastAPI] = None,
         instance_path: Optional[str] = None,
         interaction_mode: Optional[Any] = None,
+        using_berky_backend: bool = False,
     ):
         """Initialize the stream with an OpenAI realtime handler and pipelines.
 
@@ -63,6 +64,10 @@ class LocalStream:
         - ``interaction_mode``: shared Welcomer/Community Assistant toggle (see
           interaction_mode.py); only passed when the Welcomer feature is actually
           wired up, so the settings page can hide the control otherwise.
+        - ``using_berky_backend``: whether main.py selected BerkyLiveHandler for this
+          run (decided before this settings UI even mounts) - lets the connection
+          settings panel tell the user whether credentials entered now are already
+          active or need a restart to take effect.
         """
         self.handler = handler
         self._robot = robot
@@ -73,6 +78,7 @@ class LocalStream:
         self._settings_app: Optional[FastAPI] = settings_app
         self._instance_path: Optional[str] = instance_path
         self._interaction_mode = interaction_mode
+        self._using_berky_backend = using_berky_backend
         self._settings_initialized = False
         self._asyncio_loop = None
         # Set for real in launch(); defaults to True (legacy behavior) so the
@@ -167,6 +173,63 @@ class LocalStream:
                 pass
         except Exception as e:
             logger.warning("Failed to persist OPENAI_API_KEY: %s", e)
+
+    def _persist_berky_connection(
+        self, conversation_id: str, username: str, password: str, passcode: str
+    ) -> None:
+        """Persist llm_engine connection credentials to environment and instance ``.env``.
+
+        Mirrors ``_persist_api_key``'s pattern. Takes effect for BerkyLiveHandler
+        selection on the *next* app restart - main.py decides which handler to
+        construct once, early in startup, before this settings UI is even mounted,
+        so entering credentials here can't retroactively switch a handler that's
+        already running.
+        """
+        updates = {
+            "BERKIE_LLM_ENGINE_CONVERSATION_ID": conversation_id.strip(),
+            "BERKIE_LLM_ENGINE_USERNAME": username.strip(),
+            "BERKIE_LLM_ENGINE_PASSWORD": password.strip(),
+            "BERKY_TRANSCRIPT_CHANNEL_PASSCODE": passcode.strip(),
+        }
+        for key, value in updates.items():
+            if not value:
+                continue
+            try:
+                os.environ[key] = value
+                setattr(config, key, value)
+            except Exception:  # best-effort
+                pass
+
+        if not self._instance_path:
+            return
+        try:
+            inst = Path(self._instance_path)
+            env_path = inst / ".env"
+            lines = self._read_env_lines(env_path)
+            for key, value in updates.items():
+                if not value:
+                    continue
+                replaced = False
+                prefix = f"{key}="
+                for i, ln in enumerate(lines):
+                    if ln.strip().startswith(prefix):
+                        lines[i] = f"{key}={value}"
+                        replaced = True
+                        break
+                if not replaced:
+                    lines.append(f"{key}={value}")
+            final_text = "\n".join(lines) + "\n"
+            env_path.write_text(final_text, encoding="utf-8")
+            logger.info("Persisted llm_engine connection credentials to %s", env_path)
+
+            try:
+                from dotenv import load_dotenv
+
+                load_dotenv(dotenv_path=str(env_path), override=True)
+            except Exception:
+                pass
+        except Exception as e:
+            logger.warning("Failed to persist llm_engine connection credentials: %s", e)
 
     def _persist_personality(self, profile: Optional[str]) -> None:
         """Persist the startup personality to the instance .env and config."""
@@ -333,6 +396,38 @@ class LocalStream:
             self._interaction_mode.mode = payload.mode
             logger.info("Interaction mode switched to: %s", payload.mode)
             return JSONResponse({"ok": True, "mode": payload.mode})
+
+        # GET /berky_connection/status -> which fields are already set (never echoes
+        # back the actual secret values) and whether this running process is already
+        # using them (BerkyLiveHandler was selected at startup) or would need a
+        # restart to pick up newly-entered credentials.
+        @self._settings_app.get("/berky_connection/status")
+        def _berky_connection_status() -> JSONResponse:
+            return JSONResponse(
+                {
+                    "conversation_id_set": bool(config.BERKIE_LLM_ENGINE_CONVERSATION_ID),
+                    "username_set": bool(config.BERKIE_LLM_ENGINE_USERNAME),
+                    "password_set": bool(config.BERKIE_LLM_ENGINE_PASSWORD),
+                    "passcode_set": bool(config.BERKY_TRANSCRIPT_CHANNEL_PASSCODE),
+                    "active_this_session": self._using_berky_backend,
+                }
+            )
+
+        class BerkyConnectionPayload(BaseModel):
+            conversation_id: str = ""
+            username: str = ""
+            password: str = ""
+            passcode: str = ""
+
+        # POST /berky_connection/credentials -> save conversation ID/username/password/passcode
+        @self._settings_app.post("/berky_connection/credentials")
+        def _set_berky_connection(payload: BerkyConnectionPayload) -> JSONResponse:
+            if not payload.conversation_id.strip() or not payload.username.strip() or not payload.password.strip():
+                return JSONResponse({"ok": False, "error": "missing_required_field"}, status_code=400)
+            self._persist_berky_connection(
+                payload.conversation_id, payload.username, payload.password, payload.passcode
+            )
+            return JSONResponse({"ok": True, "active_this_session": self._using_berky_backend})
 
         self._settings_initialized = True
 

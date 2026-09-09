@@ -273,6 +273,7 @@ def run(
             settings_app=settings_app,
             instance_path=instance_path,
             interaction_mode=interaction_mode if welcomer is not None else None,
+            using_berky_backend=use_berky_backend,
         )
 
     # Each async service → its own thread/loop

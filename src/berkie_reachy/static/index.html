@@ -15,6 +15,34 @@
         <p class="subtitle">Berky backend status for the conversation app.</p>
       </header>
 
+      <div id="berky-connection-panel" class="panel hidden">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Berky backend</p>
+            <h2>LLM Engine connection</h2>
+          </div>
+          <span id="berky-connection-chip" class="chip">Not connected</span>
+        </div>
+        <p class="muted">
+          Connects to BKC's production LLM Engine conversation. Ask a teammate for these values -
+          they're per-account credentials, not something to guess. Takes effect on the next app restart.
+        </p>
+        <div id="berky-connection-form">
+          <label for="berky-conversation-id">Conversation ID</label>
+          <input id="berky-conversation-id" type="text" placeholder="Mongo ObjectId" autocomplete="off" />
+          <label for="berky-username">Username</label>
+          <input id="berky-username" type="text" placeholder="berky-operator-..." autocomplete="off" />
+          <label for="berky-password">Password</label>
+          <input id="berky-password" type="password" placeholder="Operator account password" autocomplete="off" />
+          <label for="berky-passcode">Transcript channel passcode (if protected)</label>
+          <input id="berky-passcode" type="password" placeholder="Optional" autocomplete="off" />
+          <div class="actions">
+            <button id="berky-connection-save-btn">Save credentials</button>
+            <p id="berky-connection-status" class="status"></p>
+          </div>
+        </div>
+      </div>
+
       <div id="interaction-mode-panel" class="panel hidden">
         <div class="panel-heading">
           <div>

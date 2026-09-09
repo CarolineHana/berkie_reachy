@@ -14,6 +14,105 @@ function show(el, flag) {
   el.classList.toggle("hidden", !flag);
 }
 
+async function fetchBerkyConnectionStatus() {
+  try {
+    const resp = await fetchWithTimeout("/berky_connection/status", {}, 2000);
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch (e) {
+    return null;
+  }
+}
+
+async function saveBerkyConnection(conversationId, username, password, passcode) {
+  const resp = await fetch("/berky_connection/credentials", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      conversation_id: conversationId,
+      username: username,
+      password: password,
+      passcode: passcode,
+    }),
+  });
+  if (!resp.ok) {
+    const data = await resp.json().catch(() => ({}));
+    throw new Error(data.error || "save_failed");
+  }
+  return await resp.json();
+}
+
+async function initBerkyConnectionPanel() {
+  const panel = document.getElementById("berky-connection-panel");
+  const chip = document.getElementById("berky-connection-chip");
+  const conversationIdInput = document.getElementById("berky-conversation-id");
+  const usernameInput = document.getElementById("berky-username");
+  const passwordInput = document.getElementById("berky-password");
+  const passcodeInput = document.getElementById("berky-passcode");
+  const saveBtn = document.getElementById("berky-connection-save-btn");
+  const statusEl = document.getElementById("berky-connection-status");
+
+  // Same retry-for-a-while pattern as the other panels - these routes mount a few
+  // seconds into startup, not immediately on page load.
+  let initialStatus = null;
+  const deadline = Date.now() + 60000;
+  while (Date.now() < deadline) {
+    initialStatus = await fetchBerkyConnectionStatus();
+    if (initialStatus) break;
+    await sleep(1000);
+  }
+  if (!initialStatus) return;
+
+  show(panel, true);
+
+  const render = (status) => {
+    const complete = status.conversation_id_set && status.username_set && status.password_set;
+    if (status.active_this_session) {
+      chip.textContent = "Connected";
+      chip.className = "chip chip-ok";
+    } else if (complete) {
+      chip.textContent = "Saved - restart to apply";
+      chip.className = "chip";
+    } else {
+      chip.textContent = "Not connected";
+      chip.className = "chip";
+    }
+    conversationIdInput.placeholder = status.conversation_id_set ? "(already set)" : "Mongo ObjectId";
+    usernameInput.placeholder = status.username_set ? "(already set)" : "berky-operator-...";
+    passwordInput.placeholder = status.password_set ? "(already set)" : "Operator account password";
+    passcodeInput.placeholder = status.passcode_set ? "(already set)" : "Optional";
+  };
+  render(initialStatus);
+
+  saveBtn.addEventListener("click", async () => {
+    const conversationId = conversationIdInput.value.trim();
+    const username = usernameInput.value.trim();
+    const password = passwordInput.value.trim();
+    const passcode = passcodeInput.value.trim();
+    if (!conversationId || !username || !password) {
+      statusEl.textContent = "Conversation ID, username, and password are all required.";
+      statusEl.className = "status warn";
+      return;
+    }
+    statusEl.textContent = "Saving...";
+    statusEl.className = "status";
+    try {
+      await saveBerkyConnection(conversationId, username, password, passcode);
+      const status = await fetchBerkyConnectionStatus();
+      if (status) render(status);
+      conversationIdInput.value = "";
+      usernameInput.value = "";
+      passwordInput.value = "";
+      passcodeInput.value = "";
+      statusEl.textContent = "Saved. Restart the app to connect with these credentials.";
+      statusEl.className = "status ok";
+    } catch (e) {
+      statusEl.textContent = "Failed to save credentials. Please try again.";
+      statusEl.className = "status error";
+    }
+  });
+}
+
 async function fetchInteractionMode() {
   try {
     const resp = await fetchWithTimeout("/interaction_mode", {}, 2000);
@@ -86,5 +185,6 @@ async function initInteractionModePanel() {
 }
 
 window.addEventListener("DOMContentLoaded", () => {
+  initBerkyConnectionPanel();
   initInteractionModePanel();
 });
