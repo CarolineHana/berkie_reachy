@@ -35,8 +35,14 @@ THINKING_TIMEOUT_SECONDS = 30.0
 # synthesized locally via self.tts and never touches llm_engine, so it plays with none of
 # the LLM round-trip latency the real answer is stuck waiting on.
 THINKING_ACK_LINES = [
-    "Heard you loud and clear, let me find the answer for you.",
-    "Let me look that up for you.",
+    "Good question, give me a second.",
+    "Hmm, let me think about that.",
+    "One moment.",
+    "Let's see...",
+    "Give me a sec.",
+    "Okay, thinking...",
+    "Let me mull that over.",
+    "On it.",
 ]
 
 
